@@ -350,8 +350,15 @@ async def confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
             text=application_text,
             message_thread_id=thread_id,
         )
+        
+        # Показати кнопку для нової заявки
+        keyboard = ReplyKeyboardMarkup(
+            [[KeyboardButton(text="📝 Зробити заявку")]],
+            resize_keyboard=True,
+        )
         await update.message.reply_text(
-            "Заявку надіслано.", reply_markup=ReplyKeyboardRemove()
+            "Заявку надіслано. Можете створити нову заявку, натиснувши кнопку нижче.",
+            reply_markup=keyboard
         )
         context.user_data.clear()
         return ConversationHandler.END
@@ -363,18 +370,15 @@ async def confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data.clear()
     
-    # Якщо приватний чат - показати кнопку для нової заявки
-    if update.message.chat.type == "private":
-        keyboard = ReplyKeyboardMarkup(
-            [[KeyboardButton(text="📝 Зробити заявку")]],
-            resize_keyboard=True,
-        )
-        await update.message.reply_text(
-            "Заповнення скасовано. Натисніть кнопку нижче, щоб почати нову заявку.",
-            reply_markup=keyboard
-        )
-    else:
-        await update.message.reply_text("Заповнення скасовано.", reply_markup=ReplyKeyboardRemove())
+    # Показати кнопку для нової заявки в приватному чаті
+    keyboard = ReplyKeyboardMarkup(
+        [[KeyboardButton(text="📝 Зробити заявку")]],
+        resize_keyboard=True,
+    )
+    await update.message.reply_text(
+        "Заповнення скасовано. Натисніть кнопку нижче, щоб почати нову заявку.",
+        reply_markup=keyboard
+    )
     
     return ConversationHandler.END
 
