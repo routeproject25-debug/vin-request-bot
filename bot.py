@@ -162,6 +162,19 @@ def _format_application(data: Dict[str, Any]) -> str:
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    # Перевірка, чи вже йде заповнення
+    if context.user_data.get("question_index") is not None:
+        keyboard = ReplyKeyboardMarkup(
+            [[KeyboardButton(text="Продовжити")], [KeyboardButton(text="Почати спочатку")]],
+            resize_keyboard=True,
+            one_time_keyboard=True,
+        )
+        await update.message.reply_text(
+            "Ви вже заповнюєте заявку. Що робити?",
+            reply_markup=keyboard,
+        )
+        return START
+    
     context.user_data.clear()
     context.user_data["question_index"] = 0
 
@@ -175,6 +188,32 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         reply_markup=keyboard,
     )
     return DEPARTMENT
+
+
+async def handle_start_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    text = (update.message.text or "").strip()
+    if text == "Продовжити":
+        await update.message.reply_text(
+            "Продовжуємо заповнення...",
+            reply_markup=ReplyKeyboardRemove(),
+        )
+        return await ask_question(update, context)
+    elif text == "Почати спочатку":
+        context.user_data.clear()
+        context.user_data["question_index"] = 0
+        keyboard = ReplyKeyboardMarkup(
+            [[KeyboardButton(text="Тваринництво")], [KeyboardButton(text="Виробництво")]],
+            resize_keyboard=True,
+            one_time_keyboard=True,
+        )
+        await update.message.reply_text(
+            "Запит від:",
+            reply_markup=keyboard,
+        )
+        return DEPARTMENT
+    else:
+        await update.message.reply_text("Будь ласка, оберіть Продовжити або Почати спочатку.")
+        return START
 
 
 async def handle_department(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -290,6 +329,13 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
 
 async def request_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    # Працює лише в групах
+    if update.message.chat.type not in ["group", "supergroup"]:
+        await update.message.reply_text(
+            "Ця команда працює лише в групах. Для створення заявки натисніть /start"
+        )
+        return
+    
     bot_username = os.getenv("BOT_USERNAME")
     if not bot_username:
         await update.message.reply_text("Не задано BOT_USERNAME.")
@@ -300,25 +346,19 @@ async def request_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         [[InlineKeyboardButton(text="📝 Зробити заявку", url=deep_link)]]
     )
     
-    # Якщо команда з групи - відправити там
-    if update.message.chat.type in ["group", "supergroup"]:
-        msg = await update.message.reply_text(
-            "👇 Натисніть кнопку для створення заявки на перевезення:",
-            reply_markup=keyboard
+    msg = await update.message.reply_text(
+        "👇 Натисніть кнопку для створення заявки на перевезення:",
+        reply_markup=keyboard
+    )
+    # Спроба закріпити (потрібні права адміна у бота)
+    try:
+        await context.bot.pin_chat_message(
+            chat_id=update.message.chat_id,
+            message_id=msg.message_id,
+            disable_notification=True
         )
-        # Спроба закріпити (потрібні права адміна у бота)
-        try:
-            await context.bot.pin_chat_message(
-                chat_id=update.message.chat_id,
-                message_id=msg.message_id,
-                disable_notification=True
-            )
-        except Exception as e:
-            logging.warning(f"Не вдалося закріпити повідомлення: {e}")
-    else:
-        await update.message.reply_text(
-            "Натисніть кнопку для заповнення заявки:", reply_markup=keyboard
-        )
+    except Exception as e:
+        logging.warning(f"Не вдалося закріпити повідомлення: {e}")
 
 
 def build_app() -> Application:
@@ -331,6 +371,7 @@ def build_app() -> Application:
     conv = ConversationHandler(
         entry_points=[CommandHandler("start", start)],
         states={
+            START: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_start_choice)],
             DEPARTMENT: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_department)],
             QUESTION: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_answer)],
             CUSTOM_INPUT: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_custom_input)],
