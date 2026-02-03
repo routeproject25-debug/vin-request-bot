@@ -297,11 +297,28 @@ async def request_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     deep_link = f"https://t.me/{bot_username}?start=apply"
     keyboard = InlineKeyboardMarkup(
-        [[InlineKeyboardButton(text="Зробити заявку", url=deep_link)]]
+        [[InlineKeyboardButton(text="📝 Зробити заявку", url=deep_link)]]
     )
-    await update.message.reply_text(
-        "Натисніть кнопку для заповнення заявки:", reply_markup=keyboard
-    )
+    
+    # Якщо команда з групи - відправити там
+    if update.message.chat.type in ["group", "supergroup"]:
+        msg = await update.message.reply_text(
+            "👇 Натисніть кнопку для створення заявки на перевезення:",
+            reply_markup=keyboard
+        )
+        # Спроба закріпити (потрібні права адміна у бота)
+        try:
+            await context.bot.pin_chat_message(
+                chat_id=update.message.chat_id,
+                message_id=msg.message_id,
+                disable_notification=True
+            )
+        except Exception as e:
+            logging.warning(f"Не вдалося закріпити повідомлення: {e}")
+    else:
+        await update.message.reply_text(
+            "Натисніть кнопку для заповнення заявки:", reply_markup=keyboard
+        )
 
 
 def build_app() -> Application:
