@@ -198,7 +198,7 @@ async def handle_start_choice(update: Update, context: ContextTypes.DEFAULT_TYPE
             reply_markup=ReplyKeyboardRemove(),
         )
         return await ask_question(update, context)
-    elif text == "Почати спочатку":
+    elif text == "Почати спочатку" or text == "📝 Зробити заявку":
         context.user_data.clear()
         context.user_data["question_index"] = 0
         keyboard = ReplyKeyboardMarkup(
@@ -324,7 +324,20 @@ async def confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data.clear()
-    await update.message.reply_text("Заповнення скасовано.", reply_markup=ReplyKeyboardRemove())
+    
+    # Якщо приватний чат - показати кнопку для нової заявки
+    if update.message.chat.type == "private":
+        keyboard = ReplyKeyboardMarkup(
+            [[KeyboardButton(text="📝 Зробити заявку")]],
+            resize_keyboard=True,
+        )
+        await update.message.reply_text(
+            "Заповнення скасовано. Натисніть кнопку нижче, щоб почати нову заявку.",
+            reply_markup=keyboard
+        )
+    else:
+        await update.message.reply_text("Заповнення скасовано.", reply_markup=ReplyKeyboardRemove())
+    
     return ConversationHandler.END
 
 
@@ -361,6 +374,12 @@ async def request_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         logging.warning(f"Не вдалося закріпити повідомлення: {e}")
 
 
+async def handle_make_request_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Обробка кнопки 📝 Зробити заявку поза ConversationHandler"""
+    if update.message.text == "📝 Зробити заявку":
+        await start(update, context)
+
+
 def build_app() -> Application:
     token = os.getenv("TELEGRAM_BOT_TOKEN")
     if not token:
@@ -382,6 +401,8 @@ def build_app() -> Application:
 
     app.add_handler(conv)
     app.add_handler(CommandHandler("request", request_button))
+    # Обробка кнопки "Зробити заявку" поза conversation
+    app.add_handler(MessageHandler(filters.Regex("^📝 Зробити заявку$"), start))
     return app
 
 
