@@ -25,12 +25,14 @@ logging.basicConfig(
     level=logging.INFO,
 )
 
-START, DEPARTMENT, QUESTION, CUSTOM_INPUT, CONFIRM = range(5)
+START, DEPARTMENT, QUESTION, CUSTOM_INPUT, CROP_TYPE, CONFIRM = range(6)
 
 THREAD_IDS = {
     "Тваринництво": 2,
     "Виробництво": 4,
 }
+
+CROP_TYPES = ["Кукурудза", "Пшениця", "Соя", "Ріпак", "Соняшник"]
 
 QUESTIONS: List[Dict[str, Any]] = [
     {
@@ -262,6 +264,13 @@ async def handle_answer(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
         await update.message.reply_text("Введіть своє значення:", reply_markup=ReplyKeyboardRemove())
         return CUSTOM_INPUT
 
+    # Якщо вибрано "культура", запитати конкретну культуру
+    if question["key"] == "cargo_type" and text.lower() == "культура":
+        context.user_data["cargo_type_prefix"] = "Культура"
+        keyboard = _build_reply_keyboard(CROP_TYPES)
+        await update.message.reply_text("Оберіть культуру:", reply_markup=keyboard)
+        return CROP_TYPE
+
     if question.get("options"):
         if text.lower() == "пропустити":
             context.user_data[question["key"]] = "—"
@@ -285,6 +294,35 @@ async def handle_custom_input(update: Update, context: ContextTypes.DEFAULT_TYPE
     context.user_data["awaiting_custom"] = False
     context.user_data["question_index"] = index + 1
     return await ask_question(update, context)
+
+
+async def handle_crop_type(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    text = (update.message.text or "").strip()
+    
+    if text.lower() == "ввести своє":
+        context.user_data["awaiting_custom_crop"] = True
+        await update.message.reply_text("Введіть назву культури:", reply_markup=ReplyKeyboardRemove())
+        return CROP_TYPE
+    
+    # Якщо це кастомне введення
+    if context.user_data.get("awaiting_custom_crop"):
+        context.user_data["cargo_type"] = f"Культура: {text}"
+        context.user_data.pop("awaiting_custom_crop", None)
+        context.user_data.pop("cargo_type_prefix", None)
+        index = context.user_data.get("question_index", 0)
+        context.user_data["question_index"] = index + 1
+        return await ask_question(update, context)
+    
+    # Якщо вибрано зі списку
+    if text in CROP_TYPES:
+        context.user_data["cargo_type"] = f"Культура: {text}"
+        context.user_data.pop("cargo_type_prefix", None)
+        index = context.user_data.get("question_index", 0)
+        context.user_data["question_index"] = index + 1
+        return await ask_question(update, context)
+    else:
+        await update.message.reply_text("Будь ласка, оберіть культуру зі списку або натисніть 'Ввести своє'.")
+        return CROP_TYPE
 
 
 async def confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -394,6 +432,7 @@ def build_app() -> Application:
             DEPARTMENT: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_department)],
             QUESTION: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_answer)],
             CUSTOM_INPUT: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_custom_input)],
+            CROP_TYPE: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_crop_type)],
             CONFIRM: [MessageHandler(filters.TEXT & ~filters.COMMAND, confirm)],
         },
         fallbacks=[CommandHandler("cancel", cancel)],
