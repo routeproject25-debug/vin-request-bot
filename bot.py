@@ -431,7 +431,10 @@ def build_app() -> Application:
     app = Application.builder().token(token).build()
 
     conv = ConversationHandler(
-        entry_points=[CommandHandler("start", start)],
+        entry_points=[
+            CommandHandler("start", start),
+            MessageHandler(filters.Regex("^📝 Зробити заявку$"), start),
+        ],
         states={
             START: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_start_choice)],
             DEPARTMENT: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_department)],
@@ -445,8 +448,6 @@ def build_app() -> Application:
 
     app.add_handler(conv)
     app.add_handler(CommandHandler("request", request_button))
-    # Обробка кнопки "Зробити заявку" поза conversation
-    app.add_handler(MessageHandler(filters.Regex("^📝 Зробити заявку$"), start))
     return app
 
 
