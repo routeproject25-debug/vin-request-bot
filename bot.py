@@ -25,8 +25,12 @@ logging.basicConfig(
     level=logging.INFO,
 )
 
-START, QUESTION, CUSTOM_INPUT, CONFIRM = range(4)
+START, DEPARTMENT, QUESTION, CUSTOM_INPUT, CONFIRM = range(5)
 
+THREAD_IDS = {
+    "Тваринництво": 2,
+    "Виробництво": 4,
+}
 
 QUESTIONS: List[Dict[str, Any]] = [
     {
@@ -161,6 +165,26 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data.clear()
     context.user_data["question_index"] = 0
 
+    keyboard = ReplyKeyboardMarkup(
+        [[KeyboardButton(text="Тваринництво")], [KeyboardButton(text="Виробництво")]],
+        resize_keyboard=True,
+        one_time_keyboard=True,
+    )
+    await update.message.reply_text(
+        "Запит від:",
+        reply_markup=keyboard,
+    )
+    return DEPARTMENT
+
+
+async def handle_department(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    text = (update.message.text or "").strip()
+    if text not in THREAD_IDS:
+        await update.message.reply_text("Будь ласка, оберіть Тваринництво або Виробництво.")
+        return DEPARTMENT
+
+    context.user_data["department"] = text
+    context.user_data["thread_id"] = THREAD_IDS[text]
     await update.message.reply_text(
         "Починаємо заповнення заявки.",
         reply_markup=ReplyKeyboardRemove(),
@@ -243,7 +267,12 @@ async def confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
             return ConversationHandler.END
 
         application_text = _format_application(context.user_data)
-        await context.bot.send_message(chat_id=chat_id, text=application_text)
+        thread_id = context.user_data.get("thread_id")
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=application_text,
+            message_thread_id=thread_id,
+        )
         await update.message.reply_text(
             "Заявку надіслано.", reply_markup=ReplyKeyboardRemove()
         )
@@ -285,6 +314,7 @@ def build_app() -> Application:
     conv = ConversationHandler(
         entry_points=[CommandHandler("start", start)],
         states={
+            DEPARTMENT: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_department)],
             QUESTION: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_answer)],
             CUSTOM_INPUT: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_custom_input)],
             CONFIRM: [MessageHandler(filters.TEXT & ~filters.COMMAND, confirm)],
