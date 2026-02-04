@@ -533,7 +533,14 @@ async def handle_answer(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     if question["key"] == "cargo_type" and text.lower() == "культура":
         context.user_data["cargo_type_prefix"] = "Культура"
         keyboard = _build_reply_keyboard(CROP_TYPES, show_back=True)
-        await update.message.reply_text("Оберіть культуру:", reply_markup=keyboard)
+        # Видалити відповідь користувача
+        try:
+            await update.message.delete()
+        except:
+            pass
+        # Зберегти message_id питання про культуру
+        bot_message = await update.message.reply_text("Оберіть культуру:", reply_markup=keyboard)
+        context.user_data["last_question_message_id"] = bot_message.message_id
         return CROP_TYPE
 
     if question.get("options"):
@@ -620,9 +627,17 @@ async def handle_crop_type(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         context.user_data.pop("cargo_type_prefix", None)
         index = context.user_data.get("question_index", 0)
         
-        # Видалити повідомлення користувача
+        # Видалити повідомлення користувача та оновити питання
         try:
             await update.message.delete()
+            # Редагувати попереднє питання
+            last_msg_id = context.user_data.get("last_question_message_id")
+            if last_msg_id:
+                await context.bot.edit_message_text(
+                    chat_id=update.effective_chat.id,
+                    message_id=last_msg_id,
+                    text=f"Оберіть культуру: ✅ {text}"
+                )
         except:
             pass
         
@@ -641,9 +656,17 @@ async def handle_crop_type(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         context.user_data.pop("cargo_type_prefix", None)
         index = context.user_data.get("question_index", 0)
         
-        # Видалити повідомлення користувача
+        # Видалити повідомлення користувача та оновити питання
         try:
             await update.message.delete()
+            # Редагувати попереднє питання
+            last_msg_id = context.user_data.get("last_question_message_id")
+            if last_msg_id:
+                await context.bot.edit_message_text(
+                    chat_id=update.effective_chat.id,
+                    message_id=last_msg_id,
+                    text=f"Оберіть культуру: ✅ {text}"
+                )
         except:
             pass
         
