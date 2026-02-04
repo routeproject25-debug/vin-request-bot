@@ -554,21 +554,28 @@ async def handle_answer(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
         else:
             context.user_data[question["key"]] = text
 
-    # Видалити повідомлення користувача та оновити питання бота
+    # Видалити повідомлення користувача та попереднє питання бота
     try:
         await update.message.delete()
-        # Редагувати попереднє повідомлення бота
+        # Видалити попереднє питання бота
         last_msg_id = context.user_data.get("last_question_message_id")
         if last_msg_id:
+            try:
+                await context.bot.delete_message(
+                    chat_id=update.effective_chat.id,
+                    message_id=last_msg_id
+                )
+            except:
+                pass
+            # Надіслати нове повідомлення з відповіддю
             answer_value = context.user_data.get(question["key"], "—")
-            await context.bot.edit_message_text(
+            await context.bot.send_message(
                 chat_id=update.effective_chat.id,
-                message_id=last_msg_id,
                 text=f"{question['prompt']} ✅ {answer_value}"
             )
     except Exception as e:
         # Логувати помилку
-        logging.error(f"Не вдалося відредагувати повідомлення: {e}")
+        logging.error(f"Помилка при оновленні повідомлення: {e}")
         pass
 
     # Якщо редагуємо - повертаємо до підтвердження
@@ -588,15 +595,22 @@ async def handle_custom_input(update: Update, context: ContextTypes.DEFAULT_TYPE
     context.user_data[question["key"]] = text
     context.user_data["awaiting_custom"] = False
     
-    # Видалити повідомлення користувача та оновити питання бота
+    # Видалити повідомлення користувача та попереднє питання бота
     try:
         await update.message.delete()
-        # Редагувати попереднє повідомлення бота
+        # Видалити попереднє питання бота
         last_msg_id = context.user_data.get("last_question_message_id")
         if last_msg_id:
-            await context.bot.edit_message_text(
+            try:
+                await context.bot.delete_message(
+                    chat_id=update.effective_chat.id,
+                    message_id=last_msg_id
+                )
+            except:
+                pass
+            # Надіслати нове повідомлення з відповіддю
+            await context.bot.send_message(
                 chat_id=update.effective_chat.id,
-                message_id=last_msg_id,
                 text=f"{question['prompt']} ✅ {text}"
             )
     except Exception as e:
@@ -628,15 +642,20 @@ async def handle_crop_type(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         context.user_data.pop("cargo_type_prefix", None)
         index = context.user_data.get("question_index", 0)
         
-        # Видалити повідомлення користувача та оновити питання
+        # Видалити повідомлення користувача та попереднє питання
         try:
             await update.message.delete()
-            # Редагувати попереднє питання
             last_msg_id = context.user_data.get("last_question_message_id")
             if last_msg_id:
-                await context.bot.edit_message_text(
+                try:
+                    await context.bot.delete_message(
+                        chat_id=update.effective_chat.id,
+                        message_id=last_msg_id
+                    )
+                except:
+                    pass
+                await context.bot.send_message(
                     chat_id=update.effective_chat.id,
-                    message_id=last_msg_id,
                     text=f"Оберіть культуру: ✅ {text}"
                 )
         except:
@@ -657,15 +676,20 @@ async def handle_crop_type(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         context.user_data.pop("cargo_type_prefix", None)
         index = context.user_data.get("question_index", 0)
         
-        # Видалити повідомлення користувача та оновити питання
+        # Видалити повідомлення користувача та попереднє питання
         try:
             await update.message.delete()
-            # Редагувати попереднє питання
             last_msg_id = context.user_data.get("last_question_message_id")
             if last_msg_id:
-                await context.bot.edit_message_text(
+                try:
+                    await context.bot.delete_message(
+                        chat_id=update.effective_chat.id,
+                        message_id=last_msg_id
+                    )
+                except:
+                    pass
+                await context.bot.send_message(
                     chat_id=update.effective_chat.id,
-                    message_id=last_msg_id,
                     text=f"Оберіть культуру: ✅ {text}"
                 )
         except:
