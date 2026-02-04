@@ -407,7 +407,7 @@ async def handle_date_type(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     
     if text == "📅 Разове перевезення":
         context.user_data["date_type"] = "single"
-        calendar, step = DetailedTelegramCalendar(locale="ru").build()
+        calendar, step = DetailedTelegramCalendar(locale="uk").build()
         await update.message.reply_text(
             "Оберіть дату перевезення:",
             reply_markup=calendar
@@ -415,7 +415,7 @@ async def handle_date_type(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         return DATE_CALENDAR
     elif text == "📆 Період перевезення":
         context.user_data["date_type"] = "period"
-        calendar, step = DetailedTelegramCalendar(locale="ru").build()
+        calendar, step = DetailedTelegramCalendar(locale="uk").build()
         await update.message.reply_text(
             "Оберіть початкову дату перевезення:",
             reply_markup=calendar
@@ -429,7 +429,7 @@ async def handle_date_type(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 async def handle_calendar(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Обробка вибору дати з календаря"""
     await update.callback_query.answer()
-    result, key, step = DetailedTelegramCalendar(locale="ru").process(update.callback_query.data)
+    result, key, step = DetailedTelegramCalendar(locale="uk").process(update.callback_query.data)
     if not result and key:
         await update.callback_query.edit_message_text(
             f"Оберіть {LSTEP[step]}:",
@@ -469,7 +469,7 @@ async def handle_calendar(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 await update.callback_query.edit_message_text(f"Початкова дата: {selected_date}")
                 
                 # Показуємо календар для кінцевої дати
-                calendar, step = DetailedTelegramCalendar(locale="ru").build()
+                calendar, step = DetailedTelegramCalendar(locale="uk").build()
                 await update.callback_query.message.reply_text(
                     "Оберіть кінцеву дату перевезення:",
                     reply_markup=calendar
@@ -479,9 +479,9 @@ async def handle_calendar(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
 
 async def handle_period_end(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Обробка вибору кінцевої дати періоду"""
+    """Обробка кінцевої дати періоду"""
     await update.callback_query.answer()
-    result, key, step = DetailedTelegramCalendar(locale="ru").process(update.callback_query.data)
+    result, key, step = DetailedTelegramCalendar(locale="uk").process(update.callback_query.data)
     if not result and key:
         await update.callback_query.edit_message_text(
             f"Оберіть {LSTEP[step]}:",
