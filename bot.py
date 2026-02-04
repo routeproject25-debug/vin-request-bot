@@ -567,7 +567,8 @@ async def handle_answer(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
                 text=f"{question['prompt']} ✅ {answer_value}"
             )
     except Exception as e:
-        # Якщо не вдалося - продовжуємо без редагування
+        # Логувати помилку
+        logging.error(f"Не вдалося відредагувати повідомлення: {e}")
         pass
 
     # Якщо редагуємо - повертаємо до підтвердження
