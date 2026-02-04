@@ -922,7 +922,7 @@ def build_app() -> Application:
     conv = ConversationHandler(
         entry_points=[
             CommandHandler("start", start),
-            MessageHandler(filters.Regex("^📝 Зробити заявку$"), start),
+            MessageHandler(filters.Regex("^📝 (Зробити заявку|Нова заявка)$"), start),
         ],
         states={
             START: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_start_menu_choice)],
