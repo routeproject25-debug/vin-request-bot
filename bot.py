@@ -1,7 +1,6 @@
 import os
 import logging
 from typing import Dict, Any, List, Optional
-from aiohttp import web
 
 from telegram import (
     Update,
@@ -453,29 +452,7 @@ def build_app() -> Application:
 
 def main() -> None:
     app = build_app()
-    
-    # Простий HTTP сервер для Render
-    async def health(request):
-        return web.Response(text="Bot is running")
-    
-    async def run_bot():
-        await app.initialize()
-        await app.start()
-        await app.updater.start_polling()
-    
-    async def shutdown(app_web):
-        await app.stop()
-        await app.shutdown()
-    
-    # Запуск HTTP сервера
-    web_app = web.Application()
-    web_app.router.add_get('/', health)
-    web_app.router.add_get('/health', health)
-    web_app.on_startup.append(lambda app: run_bot())
-    web_app.on_shutdown.append(shutdown)
-    
-    port = int(os.getenv("PORT", 10000))
-    web.run_app(web_app, host='0.0.0.0', port=port)
+    app.run_polling()
 
 
 if __name__ == "__main__":
