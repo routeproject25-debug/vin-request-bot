@@ -333,11 +333,18 @@ async def handle_template_select(update: Update, context: ContextTypes.DEFAULT_T
     
     context.user_data.clear()
     context.user_data.update(selected_template["data"])
-    # Видалити department і thread_id зі старого шаблону
+    # Якщо в шаблоні вже є department - не запитуємо, одразу до підтвердження
+    if context.user_data.get("department") and context.user_data.get("thread_id"):
+        context.user_data["question_index"] = len(QUESTIONS)
+        await update.message.reply_text(
+            f"📋 Завантажено шаблон '{text}'\n✅ Запит від: {context.user_data['department']}",
+            reply_markup=ReplyKeyboardRemove()
+        )
+        return await ask_question(update, context)
+    
+    # Інакше - запитати "Запит від:" щоб встановити правильну гілку
     context.user_data.pop("department", None)
     context.user_data.pop("thread_id", None)
-    
-    # Запитати "Запит від:" щоб встановити правильну гілку
     keyboard = ReplyKeyboardMarkup(
         [[KeyboardButton(text="Тваринництво")], [KeyboardButton(text="Виробництво")]],
         resize_keyboard=True,
@@ -983,9 +990,9 @@ async def handle_save_template_name(update: Update, context: ContextTypes.DEFAUL
     
     user_id = update.effective_user.id
     
-    # Зберегти шаблон
+    # Зберегти шаблон (залишити department і thread_id)
     template_data = {k: v for k, v in context.user_data.items() 
-                    if k not in ["question_index", "pending_save_template", "thread_id"]}
+                    if k not in ["question_index", "pending_save_template"]}
     
     db.save_template(user_id, template_name, template_data)
     
