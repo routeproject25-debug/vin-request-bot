@@ -333,12 +333,14 @@ async def handle_template_select(update: Update, context: ContextTypes.DEFAULT_T
     
     context.user_data.clear()
     context.user_data.update(selected_template["data"])
-    context.user_data["question_index"] = 0
+    # Встановлюємо question_index на кінець, щоб пропустити всі питання
+    context.user_data["question_index"] = len(QUESTIONS)
     
     await update.message.reply_text(
         "Форма заповнена з шаблону. Можете змінити дані.",
         reply_markup=ReplyKeyboardRemove()
     )
+    # Перейти прямо до перегляду/підтвердження через ask_question
     return await ask_question(update, context)
 
 
