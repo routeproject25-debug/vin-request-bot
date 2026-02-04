@@ -25,7 +25,7 @@ logging.basicConfig(
     level=logging.INFO,
 )
 
-START, DEPARTMENT, QUESTION, CUSTOM_INPUT, CROP_TYPE, CONFIRM = range(6)
+START, DEPARTMENT, QUESTION, CUSTOM_INPUT, CROP_TYPE, CONFIRM, EDIT = range(7)
 
 THREAD_IDS = {
     "Тваринництво": 2,
@@ -39,7 +39,7 @@ QUESTIONS: List[Dict[str, Any]] = [
         "key": "vehicle_type",
         "label": "Тип авто",
         "prompt": "Тип авто:",
-        "options": ["ТРАЛ", "зерновоз", "самоскид", "цистерна", "тент", "інше"],
+        "options": ["ТРАЛ", "Зерновоз", "Самоскид", "Цистерна", "Тент", "Інше"],
     },
     {
         "key": "initiator",
@@ -51,13 +51,13 @@ QUESTIONS: List[Dict[str, Any]] = [
         "key": "company",
         "label": "Підприємство",
         "prompt": "Підприємство:",
-        "options": ["Зернопродукт", "Агрокряж", "інше"],
+        "options": ["Зернопродукт", "Агрокряж", "Інше"],
     },
     {
         "key": "cargo_type",
         "label": "Вид вантажу",
         "prompt": "Вид вантажу:",
-        "options": ["культура", "АМ вода", "КАС", "РКД", "насіння", "інше"],
+        "options": ["Культура", "АМ вода", "КАС", "РКД", "Насіння", "Інше"],
     },
     {
         "key": "size_type",
@@ -126,12 +126,15 @@ def _get_question(index: int) -> Dict[str, Any]:
     return QUESTIONS[index]
 
 
-def _build_reply_keyboard(options: Optional[List[str]]) -> Optional[ReplyKeyboardMarkup]:
+def _build_reply_keyboard(options: Optional[List[str]], show_back: bool = False) -> Optional[ReplyKeyboardMarkup]:
     if not options:
-        return None
+        keyboard = [[KeyboardButton(text="⬅️ Назад")]] if show_back else None
+        return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=True) if keyboard else None
     buttons = [[KeyboardButton(text=opt)] for opt in options]
     if "Ввести своє" not in options:
         buttons.append([KeyboardButton(text="Ввести своє")])
+    if show_back:
+        buttons.append([KeyboardButton(text="⬅️ Назад")])
     return ReplyKeyboardMarkup(buttons, resize_keyboard=True, one_time_keyboard=True)
 
 
@@ -238,7 +241,7 @@ async def ask_question(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     if index >= len(QUESTIONS):
         application_text = _format_application(context.user_data)
         keyboard = ReplyKeyboardMarkup(
-            [[KeyboardButton(text="ТАК")], [KeyboardButton(text="Почати спочатку")]],
+            [[KeyboardButton(text="ТАК")], [KeyboardButton(text="✏️ Редагувати поля")]],
             resize_keyboard=True,
             one_time_keyboard=True,
         )
@@ -249,7 +252,8 @@ async def ask_question(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
         return CONFIRM
 
     question = _get_question(index)
-    keyboard = _build_reply_keyboard(question.get("options"))
+    show_back = index > 0
+    keyboard = _build_reply_keyboard(question.get("options"), show_back=show_back)
     await update.message.reply_text(question["prompt"], reply_markup=keyboard)
     return QUESTION
 
@@ -259,6 +263,15 @@ async def handle_answer(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     index = context.user_data.get("question_index", 0)
     question = _get_question(index)
 
+    # Обробка кнопки Назад
+    if text == "⬅️ Назад":
+        if index > 0:
+            context.user_data["question_index"] = index - 1
+            return await ask_question(update, context)
+        else:
+            await update.message.reply_text("Ви вже на першому питанні.")
+            return await ask_question(update, context)
+
     if text.lower() == "ввести своє":
         context.user_data["awaiting_custom"] = True
         await update.message.reply_text("Введіть своє значення:", reply_markup=ReplyKeyboardRemove())
@@ -267,7 +280,7 @@ async def handle_answer(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     # Якщо вибрано "культура", запитати конкретну культуру
     if question["key"] == "cargo_type" and text.lower() == "культура":
         context.user_data["cargo_type_prefix"] = "Культура"
-        keyboard = _build_reply_keyboard(CROP_TYPES)
+        keyboard = _build_reply_keyboard(CROP_TYPES, show_back=True)
         await update.message.reply_text("Оберіть культуру:", reply_markup=keyboard)
         return CROP_TYPE
 
@@ -325,8 +338,48 @@ async def handle_crop_type(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         return CROP_TYPE
 
 
+async def show_edit_fields(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Показує список полів для редагування"""
+    buttons = []
+    for q in QUESTIONS:
+        field_value = context.user_data.get(q["key"], "—")
+        # Обмежуємо довжину для кнопки
+        display_value = field_value[:20] + "..." if len(str(field_value)) > 20 else field_value
+        buttons.append([KeyboardButton(text=f"{q['label']}: {display_value}")])
+    
+    buttons.append([KeyboardButton(text="⬅️ Назад до підтвердження")])
+    keyboard = ReplyKeyboardMarkup(buttons, resize_keyboard=True, one_time_keyboard=True)
+    
+    await update.message.reply_text(
+        "Оберіть поле для редагування:",
+        reply_markup=keyboard
+    )
+    return EDIT
+
+
+async def handle_edit_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Обробка вибору поля для редагування"""
+    text = (update.message.text or "").strip()
+    
+    if text == "⬅️ Назад до підтвердження":
+        return await ask_question(update, context)
+    
+    # Знайти індекс питання за label
+    for idx, q in enumerate(QUESTIONS):
+        if text.startswith(q["label"]):
+            context.user_data["question_index"] = idx
+            context.user_data["editing_mode"] = True
+            return await ask_question(update, context)
+    
+    await update.message.reply_text("Будь ласка, оберіть поле зі списку.")
+    return EDIT
+
+
 async def confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     text = (update.message.text or "").strip().lower()
+
+    if text == "✏️ редагувати поля":
+        return await show_edit_fields(update, context)
 
     if text == "почати спочатку":
         context.user_data.clear()
@@ -345,9 +398,15 @@ async def confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
         application_text = _format_application(context.user_data)
         thread_id = context.user_data.get("thread_id")
+        
+        # Додаємо згадку користувача
+        user = update.effective_user
+        user_mention = f"@{user.username}" if user.username else user.full_name
+        notification = f"📋 {user_mention} створив нову заявку:\n\n{application_text}"
+        
         await context.bot.send_message(
             chat_id=chat_id,
-            text=application_text,
+            text=notification,
             message_thread_id=thread_id,
         )
         
@@ -441,6 +500,7 @@ def build_app() -> Application:
             CUSTOM_INPUT: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_custom_input)],
             CROP_TYPE: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_crop_type)],
             CONFIRM: [MessageHandler(filters.TEXT & ~filters.COMMAND, confirm)],
+            EDIT: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_edit_choice)],
         },
         fallbacks=[CommandHandler("cancel", cancel)],
     )
