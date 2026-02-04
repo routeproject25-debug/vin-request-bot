@@ -142,19 +142,21 @@ def _build_reply_keyboard(options: Optional[List[str]], show_back: bool = False)
 
 
 def _calendar_build():
-    try:
-        return DetailedTelegramCalendar(locale="uk").build()
-    except Exception:
-        logging.exception("Calendar build failed for locale uk; falling back to default")
-        return DetailedTelegramCalendar().build()
+    for locale in ("uk", "uk_UA", "ru"):
+        try:
+            return DetailedTelegramCalendar(locale=locale).build()
+        except Exception:
+            logging.exception("Calendar build failed for locale %s", locale)
+    return DetailedTelegramCalendar().build()
 
 
 def _calendar_process(data: str):
-    try:
-        return DetailedTelegramCalendar(locale="uk").process(data)
-    except Exception:
-        logging.exception("Calendar process failed for locale uk; falling back to default")
-        return DetailedTelegramCalendar().process(data)
+    for locale in ("uk", "uk_UA", "ru"):
+        try:
+            return DetailedTelegramCalendar(locale=locale).process(data)
+        except Exception:
+            logging.exception("Calendar process failed for locale %s", locale)
+    return DetailedTelegramCalendar().process(data)
 
 
 def _format_application(data: Dict[str, Any]) -> str:
