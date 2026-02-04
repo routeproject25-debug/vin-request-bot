@@ -264,14 +264,18 @@ async def ask_question(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     
     # Якщо це питання про дату - запитуємо тип перевезення
     if question["key"] == "date_period":
+        buttons = [
+            [KeyboardButton(text="📅 Разове перевезення")], 
+            [KeyboardButton(text="📆 Період перевезення")]
+        ]
+        if index > 0:
+            buttons.append([KeyboardButton(text="⬅️ Назад")])
+        
         keyboard = ReplyKeyboardMarkup(
-            [[KeyboardButton(text="📅 Разове перевезення")], 
-             [KeyboardButton(text="📆 Період перевезення")]],
+            buttons,
             resize_keyboard=True,
             one_time_keyboard=True,
         )
-        if index > 0:
-            keyboard.keyboard.append([KeyboardButton(text="⬅️ Назад")])
         await update.message.reply_text(
             "Оберіть тип перевезення:",
             reply_markup=keyboard
