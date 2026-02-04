@@ -726,6 +726,10 @@ async def handle_date_type(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     text = (update.message.text or "").strip()
     
     if text == "⬅️ Назад":
+        try:
+            await update.message.delete()
+        except:
+            pass
         index = context.user_data.get("question_index", 0)
         if index > 0:
             context.user_data["question_index"] = index - 1
@@ -733,6 +737,11 @@ async def handle_date_type(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     
     if text == "📅 Разове перевезення":
         context.user_data["date_type"] = "single"
+        # Видалити повідомлення користувача
+        try:
+            await update.message.delete()
+        except:
+            pass
         today = date.today()
         calendar = _build_month_calendar(today.year, today.month)
         await update.message.reply_text(
@@ -742,6 +751,11 @@ async def handle_date_type(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         return DATE_CALENDAR
     elif text == "📆 Період перевезення":
         context.user_data["date_type"] = "period"
+        # Видалити повідомлення користувача
+        try:
+            await update.message.delete()
+        except:
+            pass
         today = date.today()
         calendar = _build_month_calendar(today.year, today.month)
         await update.message.reply_text(
@@ -773,7 +787,7 @@ async def handle_calendar(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         
         if date_type == "single":
             context.user_data["date_period"] = selected_date
-            await update.callback_query.edit_message_text(f"Дата перевезення: {selected_date}")
+            await update.callback_query.edit_message_text(f"📅 Дата перевезення: ✅ {selected_date}")
             
             # Переходимо до наступного питання або підтвердження
             if context.user_data.get("editing_mode"):
@@ -797,7 +811,7 @@ async def handle_calendar(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         elif date_type == "period":
             if "date_period_start" not in context.user_data:
                 context.user_data["date_period_start"] = selected_date
-                await update.callback_query.edit_message_text(f"Початкова дата: {selected_date}")
+                await update.callback_query.edit_message_text(f"📅 Початкова дата: ✅ {selected_date}")
                 
                 # Показуємо календар для кінцевої дати
                 calendar = _build_month_calendar(selected_dt.year, selected_dt.month)
@@ -830,7 +844,7 @@ async def handle_period_end(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         context.user_data.pop("date_period_start", None)
         
         await update.callback_query.edit_message_text(
-            f"Період перевезення: {start_date} - {end_date}"
+            f"📅 Період перевезення: ✅ {start_date} - {end_date}"
         )
         
         # Переходимо до наступного питання
