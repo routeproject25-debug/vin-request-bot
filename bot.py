@@ -333,15 +333,21 @@ async def handle_template_select(update: Update, context: ContextTypes.DEFAULT_T
     
     context.user_data.clear()
     context.user_data.update(selected_template["data"])
-    # Встановлюємо question_index на кінець, щоб пропустити всі питання
-    context.user_data["question_index"] = len(QUESTIONS)
+    # Видалити department і thread_id зі старого шаблону
+    context.user_data.pop("department", None)
+    context.user_data.pop("thread_id", None)
     
-    await update.message.reply_text(
-        "Форма заповнена з шаблону. Можете змінити дані.",
-        reply_markup=ReplyKeyboardRemove()
+    # Запитати "Запит від:" щоб встановити правильну гілку
+    keyboard = ReplyKeyboardMarkup(
+        [[KeyboardButton(text="Тваринництво")], [KeyboardButton(text="Виробництво")]],
+        resize_keyboard=True,
+        one_time_keyboard=True,
     )
-    # Перейти прямо до перегляду/підтвердження через ask_question
-    return await ask_question(update, context)
+    await update.message.reply_text(
+        f"📋 Завантажено шаблон '{text}'\n\nЗапит від:",
+        reply_markup=keyboard,
+    )
+    return DEPARTMENT
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -416,6 +422,28 @@ async def handle_department(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
     context.user_data["department"] = text
     context.user_data["thread_id"] = THREAD_IDS[text]
+    
+    # Якщо редагується department - повернутися до підтвердження
+    if context.user_data.get("editing_department"):
+        context.user_data.pop("editing_department", None)
+        context.user_data["question_index"] = len(QUESTIONS)
+        await update.message.reply_text(
+            f"✅ Змінено на '{text}'",
+            reply_markup=ReplyKeyboardRemove(),
+        )
+        return await ask_question(update, context)
+    
+    # Якщо це шаблон (вже є дані) - перейти до підтвердження
+    if len(context.user_data) > 3:  # Більше ніж department, thread_id, question_index
+        context.user_data["question_index"] = len(QUESTIONS)
+        await update.message.reply_text(
+            "Форма заповнена з шаблону.",
+            reply_markup=ReplyKeyboardRemove(),
+        )
+        return await ask_question(update, context)
+    
+    # Інакше почати заповнення
+    context.user_data["question_index"] = 0
     await update.message.reply_text(
         "Починаємо заповнення заявки.",
         reply_markup=ReplyKeyboardRemove(),
@@ -718,6 +746,11 @@ async def handle_period_end(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 async def show_edit_fields(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Показує список полів для редагування"""
     buttons = []
+    
+    # Додати "Запит від:" як перше редаговане поле
+    department = context.user_data.get("department", "—")
+    buttons.append([KeyboardButton(text=f"Запит від: {department}")])
+    
     for q in QUESTIONS:
         field_value = context.user_data.get(q["key"], "—")
         # Обмежуємо довжину для кнопки
@@ -740,6 +773,20 @@ async def handle_edit_choice(update: Update, context: ContextTypes.DEFAULT_TYPE)
     
     if text == "⬅️ Назад до підтвердження":
         return await ask_question(update, context)
+    
+    # Перевірити, чи редагується "Запит від:"
+    if text.startswith("Запит від:"):
+        keyboard = ReplyKeyboardMarkup(
+            [[KeyboardButton(text="Тваринництво")], [KeyboardButton(text="Виробництво")]],
+            resize_keyboard=True,
+            one_time_keyboard=True,
+        )
+        await update.message.reply_text(
+            "Запит від:",
+            reply_markup=keyboard,
+        )
+        context.user_data["editing_department"] = True
+        return DEPARTMENT
     
     # Знайти індекс питання за label
     for idx, q in enumerate(QUESTIONS):
