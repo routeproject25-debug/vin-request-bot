@@ -295,6 +295,12 @@ async def handle_answer(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
         else:
             context.user_data[question["key"]] = text
 
+    # Якщо редагуємо - повертаємо до підтвердження
+    if context.user_data.get("editing_mode"):
+        context.user_data.pop("editing_mode", None)
+        context.user_data["question_index"] = len(QUESTIONS)
+        return await ask_question(update, context)
+    
     context.user_data["question_index"] = index + 1
     return await ask_question(update, context)
 
@@ -305,6 +311,13 @@ async def handle_custom_input(update: Update, context: ContextTypes.DEFAULT_TYPE
     question = _get_question(index)
     context.user_data[question["key"]] = text
     context.user_data["awaiting_custom"] = False
+    
+    # Якщо редагуємо - повертаємо до підтвердження
+    if context.user_data.get("editing_mode"):
+        context.user_data.pop("editing_mode", None)
+        context.user_data["question_index"] = len(QUESTIONS)
+        return await ask_question(update, context)
+    
     context.user_data["question_index"] = index + 1
     return await ask_question(update, context)
 
@@ -323,6 +336,13 @@ async def handle_crop_type(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         context.user_data.pop("awaiting_custom_crop", None)
         context.user_data.pop("cargo_type_prefix", None)
         index = context.user_data.get("question_index", 0)
+        
+        # Якщо редагуємо - повертаємо до підтвердження
+        if context.user_data.get("editing_mode"):
+            context.user_data.pop("editing_mode", None)
+            context.user_data["question_index"] = len(QUESTIONS)
+            return await ask_question(update, context)
+        
         context.user_data["question_index"] = index + 1
         return await ask_question(update, context)
     
@@ -331,6 +351,13 @@ async def handle_crop_type(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         context.user_data["cargo_type"] = f"Культура: {text}"
         context.user_data.pop("cargo_type_prefix", None)
         index = context.user_data.get("question_index", 0)
+        
+        # Якщо редагуємо - повертаємо до підтвердження
+        if context.user_data.get("editing_mode"):
+            context.user_data.pop("editing_mode", None)
+            context.user_data["question_index"] = len(QUESTIONS)
+            return await ask_question(update, context)
+        
         context.user_data["question_index"] = index + 1
         return await ask_question(update, context)
     else:
