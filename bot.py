@@ -1,8 +1,9 @@
 import os
 import logging
-from typing import Dict, Any, List, Optional
-from datetime import datetime
-from telegram_bot_calendar import DetailedTelegramCalendar, LSTEP
+import calendar
+from typing import Dict, Any, List, Optional, Tuple
+from datetime import datetime, date
+from telegram_bot_calendar import DetailedTelegramCalendar
 
 from telegram import (
     Update,
@@ -38,6 +39,23 @@ THREAD_IDS = {
 CROP_TYPES = ["Кукурудза", "Пшениця", "Соя", "Ріпак", "Соняшник"]
 
 LIQUID_BULK_CARGO = {"КАС", "РКД", "АМ вода"}
+
+CAL_PREFIX = "CAL"
+MONTH_NAMES_UK = [
+    "Січень",
+    "Лютий",
+    "Березень",
+    "Квітень",
+    "Травень",
+    "Червень",
+    "Липень",
+    "Серпень",
+    "Вересень",
+    "Жовтень",
+    "Листопад",
+    "Грудень",
+]
+WEEKDAYS_UK = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Нд"]
 
 QUESTIONS: List[Dict[str, Any]] = [
     {
@@ -159,22 +177,59 @@ def _build_reply_keyboard(options: Optional[List[str]], show_back: bool = False)
     return ReplyKeyboardMarkup(buttons, resize_keyboard=True, one_time_keyboard=True)
 
 
-def _calendar_build():
-    for locale in ("uk", "uk_UA", "ru"):
-        try:
-            return DetailedTelegramCalendar(locale=locale).build()
-        except Exception:
-            logging.exception("Calendar build failed for locale %s", locale)
-    return DetailedTelegramCalendar().build()
+def _build_month_calendar(year: int, month: int) -> InlineKeyboardMarkup:
+    rows: List[List[InlineKeyboardButton]] = []
+    header_text = f"{MONTH_NAMES_UK[month - 1]} {year}"
+    rows.append([InlineKeyboardButton(text=header_text, callback_data=f"{CAL_PREFIX}:X")])
+    rows.append([InlineKeyboardButton(text=day, callback_data=f"{CAL_PREFIX}:X") for day in WEEKDAYS_UK])
+
+    cal = calendar.Calendar(firstweekday=0)
+    for week in cal.monthdayscalendar(year, month):
+        row: List[InlineKeyboardButton] = []
+        for day in week:
+            if day == 0:
+                row.append(InlineKeyboardButton(text=" ", callback_data=f"{CAL_PREFIX}:X"))
+            else:
+                row.append(
+                    InlineKeyboardButton(
+                        text=str(day),
+                        callback_data=f"{CAL_PREFIX}:D:{year:04d}-{month:02d}-{day:02d}",
+                    )
+                )
+        rows.append(row)
+
+    prev_year, prev_month = (year - 1, 12) if month == 1 else (year, month - 1)
+    next_year, next_month = (year + 1, 1) if month == 12 else (year, month + 1)
+    rows.append(
+        [
+            InlineKeyboardButton(text="«", callback_data=f"{CAL_PREFIX}:N:{prev_year:04d}-{prev_month:02d}"),
+            InlineKeyboardButton(text="Сьогодні", callback_data=f"{CAL_PREFIX}:T"),
+            InlineKeyboardButton(text="»", callback_data=f"{CAL_PREFIX}:N:{next_year:04d}-{next_month:02d}"),
+        ]
+    )
+    return InlineKeyboardMarkup(rows)
 
 
-def _calendar_process(data: str):
-    for locale in ("uk", "uk_UA", "ru"):
-        try:
-            return DetailedTelegramCalendar(locale=locale).process(data)
-        except Exception:
-            logging.exception("Calendar process failed for locale %s", locale)
-    return DetailedTelegramCalendar().process(data)
+def _parse_calendar_callback(data: str) -> Tuple[str, Optional[str]]:
+    if not data or not data.startswith(f"{CAL_PREFIX}:"):
+        return "IGNORE", None
+    parts = data.split(":", 2)
+    if len(parts) < 2:
+        return "IGNORE", None
+    action = parts[1]
+    if action in {"X"}:
+        return "IGNORE", None
+    if action == "T":
+        today = date.today()
+        return "NAV", f"{today.year:04d}-{today.month:02d}"
+    if len(parts) < 3:
+        return "IGNORE", None
+    payload = parts[2]
+    if action == "N":
+        return "NAV", payload
+    if action == "D":
+        return "DATE", payload
+    return "IGNORE", None
 
 
 def _format_application(data: Dict[str, Any]) -> str:
@@ -448,7 +503,8 @@ async def handle_date_type(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     
     if text == "📅 Разове перевезення":
         context.user_data["date_type"] = "single"
-        calendar, step = _calendar_build()
+        today = date.today()
+        calendar = _build_month_calendar(today.year, today.month)
         await update.message.reply_text(
             "Оберіть дату перевезення:",
             reply_markup=calendar
@@ -456,7 +512,8 @@ async def handle_date_type(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         return DATE_CALENDAR
     elif text == "📆 Період перевезення":
         context.user_data["date_type"] = "period"
-        calendar, step = _calendar_build()
+        today = date.today()
+        calendar = _build_month_calendar(today.year, today.month)
         await update.message.reply_text(
             "Оберіть початкову дату перевезення:",
             reply_markup=calendar
@@ -470,16 +527,19 @@ async def handle_date_type(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 async def handle_calendar(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Обробка вибору дати з календаря"""
     await update.callback_query.answer()
-    result, key, step = _calendar_process(update.callback_query.data)
-    if not result and key:
-        await update.callback_query.edit_message_text(
-            f"Оберіть {LSTEP[step]}:",
-            reply_markup=key
-        )
+    action, payload = _parse_calendar_callback(update.callback_query.data)
+    date_type = context.user_data.get("date_type")
+
+    if action == "NAV" and payload:
+        year_str, month_str = payload.split("-")
+        calendar = _build_month_calendar(int(year_str), int(month_str))
+        prompt = "Оберіть дату перевезення:" if date_type == "single" else "Оберіть початкову дату перевезення:"
+        await update.callback_query.edit_message_text(prompt, reply_markup=calendar)
         return DATE_CALENDAR
-    elif result:
-        selected_date = result.strftime("%d.%m.%Y")
-        date_type = context.user_data.get("date_type")
+
+    if action == "DATE" and payload:
+        selected_dt = datetime.strptime(payload, "%Y-%m-%d").date()
+        selected_date = selected_dt.strftime("%d.%m.%Y")
         
         if date_type == "single":
             context.user_data["date_period"] = selected_date
@@ -510,7 +570,7 @@ async def handle_calendar(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 await update.callback_query.edit_message_text(f"Початкова дата: {selected_date}")
                 
                 # Показуємо календар для кінцевої дати
-                calendar, step = _calendar_build()
+                calendar = _build_month_calendar(selected_dt.year, selected_dt.month)
                 await update.callback_query.message.reply_text(
                     "Оберіть кінцеву дату перевезення:",
                     reply_markup=calendar
@@ -522,15 +582,19 @@ async def handle_calendar(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 async def handle_period_end(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Обробка кінцевої дати періоду"""
     await update.callback_query.answer()
-    result, key, step = _calendar_process(update.callback_query.data)
-    if not result and key:
+    action, payload = _parse_calendar_callback(update.callback_query.data)
+    if action == "NAV" and payload:
+        year_str, month_str = payload.split("-")
+        calendar = _build_month_calendar(int(year_str), int(month_str))
         await update.callback_query.edit_message_text(
-            f"Оберіть {LSTEP[step]}:",
-            reply_markup=key
+            "Оберіть кінцеву дату перевезення:",
+            reply_markup=calendar
         )
         return DATE_PERIOD_END
-    elif result:
-        end_date = result.strftime("%d.%m.%Y")
+
+    if action == "DATE" and payload:
+        end_dt = datetime.strptime(payload, "%Y-%m-%d").date()
+        end_date = end_dt.strftime("%d.%m.%Y")
         start_date = context.user_data.get("date_period_start")
         context.user_data["date_period"] = f"{start_date} - {end_date}"
         context.user_data.pop("date_period_start", None)
