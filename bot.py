@@ -499,7 +499,9 @@ async def ask_question(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     
     show_back = index > 0
     keyboard = _build_reply_keyboard(question.get("options"), show_back=show_back)
-    await update.message.reply_text(question["prompt"], reply_markup=keyboard)
+    # Зберегти message_id щоб потім редагувати
+    bot_message = await update.message.reply_text(question["prompt"], reply_markup=keyboard)
+    context.user_data["last_question_message_id"] = bot_message.message_id
     return QUESTION
 
 
@@ -510,6 +512,11 @@ async def handle_answer(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
 
     # Обробка кнопки Назад
     if text == "⬅️ Назад":
+        # Видалити повідомлення користувача
+        try:
+            await update.message.delete()
+        except:
+            pass
         if index > 0:
             context.user_data["question_index"] = index - 1
             return await ask_question(update, context)
@@ -540,6 +547,22 @@ async def handle_answer(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
         else:
             context.user_data[question["key"]] = text
 
+    # Видалити повідомлення користувача та оновити питання бота
+    try:
+        await update.message.delete()
+        # Редагувати попереднє повідомлення бота
+        last_msg_id = context.user_data.get("last_question_message_id")
+        if last_msg_id:
+            answer_value = context.user_data.get(question["key"], "—")
+            await context.bot.edit_message_text(
+                chat_id=update.effective_chat.id,
+                message_id=last_msg_id,
+                text=f"{question['prompt']} ✅ {answer_value}"
+            )
+    except Exception as e:
+        # Якщо не вдалося - продовжуємо без редагування
+        pass
+
     # Якщо редагуємо - повертаємо до підтвердження
     if context.user_data.get("editing_mode"):
         context.user_data.pop("editing_mode", None)
@@ -556,6 +579,21 @@ async def handle_custom_input(update: Update, context: ContextTypes.DEFAULT_TYPE
     question = _get_question(index)
     context.user_data[question["key"]] = text
     context.user_data["awaiting_custom"] = False
+    
+    # Видалити повідомлення користувача та оновити питання бота
+    try:
+        await update.message.delete()
+        # Редагувати попереднє повідомлення бота
+        last_msg_id = context.user_data.get("last_question_message_id")
+        if last_msg_id:
+            await context.bot.edit_message_text(
+                chat_id=update.effective_chat.id,
+                message_id=last_msg_id,
+                text=f"{question['prompt']} ✅ {text}"
+            )
+    except Exception as e:
+        # Якщо не вдалося - продовжуємо без редагування
+        pass
     
     # Якщо редагуємо - повертаємо до підтвердження
     if context.user_data.get("editing_mode"):
@@ -582,6 +620,12 @@ async def handle_crop_type(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         context.user_data.pop("cargo_type_prefix", None)
         index = context.user_data.get("question_index", 0)
         
+        # Видалити повідомлення користувача
+        try:
+            await update.message.delete()
+        except:
+            pass
+        
         # Якщо редагуємо - повертаємо до підтвердження
         if context.user_data.get("editing_mode"):
             context.user_data.pop("editing_mode", None)
@@ -596,6 +640,12 @@ async def handle_crop_type(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         context.user_data["cargo_type"] = f"Культура: {text}"
         context.user_data.pop("cargo_type_prefix", None)
         index = context.user_data.get("question_index", 0)
+        
+        # Видалити повідомлення користувача
+        try:
+            await update.message.delete()
+        except:
+            pass
         
         # Якщо редагуємо - повертаємо до підтвердження
         if context.user_data.get("editing_mode"):
