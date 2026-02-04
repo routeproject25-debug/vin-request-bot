@@ -670,6 +670,7 @@ def build_app() -> Application:
     app = Application.builder().token(token).build()
 
     conv = ConversationHandler(
+        per_message=True,
         entry_points=[
             CommandHandler("start", start),
             MessageHandler(filters.Regex("^📝 Зробити заявку$"), start),
@@ -681,8 +682,8 @@ def build_app() -> Application:
             CUSTOM_INPUT: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_custom_input)],
             CROP_TYPE: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_crop_type)],
             DATE_TYPE: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_date_type)],
-            DATE_CALENDAR: [CallbackQueryHandler(handle_calendar, per_message=True)],
-            DATE_PERIOD_END: [CallbackQueryHandler(handle_period_end, per_message=True)],
+            DATE_CALENDAR: [CallbackQueryHandler(handle_calendar)],
+            DATE_PERIOD_END: [CallbackQueryHandler(handle_period_end)],
             CONFIRM: [MessageHandler(filters.TEXT & ~filters.COMMAND, confirm)],
             EDIT: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_edit_choice)],
         },
