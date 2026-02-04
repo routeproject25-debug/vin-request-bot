@@ -670,7 +670,6 @@ def build_app() -> Application:
     app = Application.builder().token(token).build()
 
     conv = ConversationHandler(
-        per_message=True,
         entry_points=[
             CommandHandler("start", start),
             MessageHandler(filters.Regex("^📝 Зробити заявку$"), start),
