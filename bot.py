@@ -1,6 +1,8 @@
 import os
 import logging
 from typing import Dict, Any, List, Optional
+from datetime import datetime
+from telegram_bot_calendar import DetailedTelegramCalendar, LSTEP
 
 from telegram import (
     Update,
@@ -16,6 +18,7 @@ from telegram.ext import (
     ContextTypes,
     ConversationHandler,
     MessageHandler,
+    CallbackQueryHandler,
     filters,
 )
 
@@ -25,7 +28,7 @@ logging.basicConfig(
     level=logging.INFO,
 )
 
-START, DEPARTMENT, QUESTION, CUSTOM_INPUT, CROP_TYPE, CONFIRM, EDIT = range(7)
+START, DEPARTMENT, QUESTION, CUSTOM_INPUT, CROP_TYPE, CONFIRM, EDIT, DATE_TYPE, DATE_CALENDAR, DATE_PERIOD_END = range(10)
 
 THREAD_IDS = {
     "Тваринництво": 2,
@@ -142,8 +145,14 @@ def _format_application(data: Dict[str, Any]) -> str:
     def val(key: str) -> str:
         value = data.get(key)
         return value if value else "—"
+    
+    now = datetime.now()
+    date_str = now.strftime("%d.%m.%Y")
+    time_str = now.strftime("%H:%M")
 
     return (
+            f"Дата: {date_str}\n"
+            f"Час: {time_str}\n\n"
         "ЗАЯВКА НА ПЕРЕВЕЗЕННЯ\n\n"
         "Вимоги до авто:\n"
         f"Тип авто: {val('vehicle_type')}\n\n"
@@ -252,6 +261,23 @@ async def ask_question(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
         return CONFIRM
 
     question = _get_question(index)
+    
+    # Якщо це питання про дату - запитуємо тип перевезення
+    if question["key"] == "date_period":
+        keyboard = ReplyKeyboardMarkup(
+            [[KeyboardButton(text="📅 Разове перевезення")], 
+             [KeyboardButton(text="📆 Період перевезення")]],
+            resize_keyboard=True,
+            one_time_keyboard=True,
+        )
+        if index > 0:
+            keyboard.keyboard.append([KeyboardButton(text="⬅️ Назад")])
+        await update.message.reply_text(
+            "Оберіть тип перевезення:",
+            reply_markup=keyboard
+        )
+        return DATE_TYPE
+    
     show_back = index > 0
     keyboard = _build_reply_keyboard(question.get("options"), show_back=show_back)
     await update.message.reply_text(question["prompt"], reply_markup=keyboard)
@@ -363,6 +389,128 @@ async def handle_crop_type(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     else:
         await update.message.reply_text("Будь ласка, оберіть культуру зі списку або натисніть 'Ввести своє'.")
         return CROP_TYPE
+
+
+async def handle_date_type(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Обробка вибору типу перевезення"""
+    text = (update.message.text or "").strip()
+    
+    if text == "⬅️ Назад":
+        index = context.user_data.get("question_index", 0)
+        if index > 0:
+            context.user_data["question_index"] = index - 1
+            return await ask_question(update, context)
+    
+    if text == "📅 Разове перевезення":
+        context.user_data["date_type"] = "single"
+        calendar, step = DetailedTelegramCalendar(locale="uk").build()
+        await update.message.reply_text(
+            "Оберіть дату перевезення:",
+            reply_markup=calendar
+        )
+        return DATE_CALENDAR
+    elif text == "📆 Період перевезення":
+        context.user_data["date_type"] = "period"
+        calendar, step = DetailedTelegramCalendar(locale="uk").build()
+        await update.message.reply_text(
+            "Оберіть початкову дату перевезення:",
+            reply_markup=calendar
+        )
+        return DATE_CALENDAR
+    else:
+        await update.message.reply_text("Будь ласка, оберіть тип перевезення.")
+        return DATE_TYPE
+
+
+async def handle_calendar(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Обробка вибору дати з календаря"""
+    result, key, step = DetailedTelegramCalendar(locale="uk").process(update.callback_query.data)
+    if not result and key:
+        await update.callback_query.edit_message_text(
+            f"Оберіть {LSTEP[step]}:",
+            reply_markup=key
+        )
+        return DATE_CALENDAR
+    elif result:
+        selected_date = result.strftime("%d.%m.%Y")
+        date_type = context.user_data.get("date_type")
+        
+        if date_type == "single":
+            context.user_data["date_period"] = selected_date
+            await update.callback_query.edit_message_text(f"Дата перевезення: {selected_date}")
+            
+            # Переходимо до наступного питання або підтвердження
+            if context.user_data.get("editing_mode"):
+                context.user_data.pop("editing_mode", None)
+                context.user_data["question_index"] = len(QUESTIONS)
+            else:
+                index = context.user_data.get("question_index", 0)
+                context.user_data["question_index"] = index + 1
+            
+            # Створюємо фейковий update для ask_question
+            class FakeMessage:
+                def __init__(self, chat_id):
+                    self.chat_id = chat_id
+                    self.message_id = None
+                async def reply_text(self, *args, **kwargs):
+                    return await update.callback_query.message.reply_text(*args, **kwargs)
+            
+            fake_update = type('obj', (object,), {'message': FakeMessage(update.callback_query.message.chat_id), 'effective_user': update.effective_user})()
+            return await ask_question(fake_update, context)
+            
+        elif date_type == "period":
+            if "date_period_start" not in context.user_data:
+                context.user_data["date_period_start"] = selected_date
+                await update.callback_query.edit_message_text(f"Початкова дата: {selected_date}")
+                
+                # Показуємо календар для кінцевої дати
+                calendar, step = DetailedTelegramCalendar(locale="uk").build()
+                await update.callback_query.message.reply_text(
+                    "Оберіть кінцеву дату перевезення:",
+                    reply_markup=calendar
+                )
+                return DATE_PERIOD_END
+    return DATE_CALENDAR
+
+
+async def handle_period_end(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Обробка кінцевої дати періоду"""
+    result, key, step = DetailedTelegramCalendar(locale="uk").process(update.callback_query.data)
+    if not result and key:
+        await update.callback_query.edit_message_text(
+            f"Оберіть {LSTEP[step]}:",
+            reply_markup=key
+        )
+        return DATE_PERIOD_END
+    elif result:
+        end_date = result.strftime("%d.%m.%Y")
+        start_date = context.user_data.get("date_period_start")
+        context.user_data["date_period"] = f"{start_date} - {end_date}"
+        context.user_data.pop("date_period_start", None)
+        
+        await update.callback_query.edit_message_text(
+            f"Період перевезення: {start_date} - {end_date}"
+        )
+        
+        # Переходимо до наступного питання
+        if context.user_data.get("editing_mode"):
+            context.user_data.pop("editing_mode", None)
+            context.user_data["question_index"] = len(QUESTIONS)
+        else:
+            index = context.user_data.get("question_index", 0)
+            context.user_data["question_index"] = index + 1
+        
+        class FakeMessage:
+            def __init__(self, chat_id):
+                self.chat_id = chat_id
+                self.message_id = None
+            async def reply_text(self, *args, **kwargs):
+                return await update.callback_query.message.reply_text(*args, **kwargs)
+        
+        fake_update = type('obj', (object,), {'message': FakeMessage(update.callback_query.message.chat_id), 'effective_user': update.effective_user})()
+        return await ask_question(fake_update, context)
+    
+    return DATE_PERIOD_END
 
 
 async def show_edit_fields(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -526,6 +674,9 @@ def build_app() -> Application:
             QUESTION: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_answer)],
             CUSTOM_INPUT: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_custom_input)],
             CROP_TYPE: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_crop_type)],
+            DATE_TYPE: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_date_type)],
+            DATE_CALENDAR: [CallbackQueryHandler(handle_calendar)],
+            DATE_PERIOD_END: [CallbackQueryHandler(handle_period_end)],
             CONFIRM: [MessageHandler(filters.TEXT & ~filters.COMMAND, confirm)],
             EDIT: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_edit_choice)],
         },
