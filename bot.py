@@ -37,6 +37,8 @@ THREAD_IDS = {
 
 CROP_TYPES = ["Кукурудза", "Пшениця", "Соя", "Ріпак", "Соняшник"]
 
+LIQUID_BULK_CARGO = {"КАС", "РКД", "АМ вода"}
+
 QUESTIONS: List[Dict[str, Any]] = [
     {
         "key": "vehicle_type",
@@ -66,7 +68,7 @@ QUESTIONS: List[Dict[str, Any]] = [
         "key": "size_type",
         "label": "Габарит / негабарит",
         "prompt": "Габарит / негабарит:",
-        "options": ["Габарит", "Негабарит"],
+        "options": ["Габарит", "Негабарит", "Насип", "Рідкі"],
     },
     {
         "key": "volume",
@@ -90,19 +92,19 @@ QUESTIONS: List[Dict[str, Any]] = [
         "key": "load_place",
         "label": "Місце завантаження",
         "prompt": "Місце завантаження:",
-        "options": None,
+        "options": ["Пропустити"],
     },
     {
         "key": "load_method",
         "label": "Спосіб завантаження",
         "prompt": "Спосіб завантаження:",
-        "options": None,
+        "options": ["Пропустити"],
     },
     {
         "key": "load_contact",
         "label": "Контакт на завантаженні (ПІБ, телефон)",
         "prompt": "Контакт на завантаженні (ПІБ, телефон):",
-        "options": None,
+        "options": ["Пропустити"],
     },
     {
         "key": "unload_place",
@@ -127,6 +129,22 @@ QUESTIONS: List[Dict[str, Any]] = [
 
 def _get_question(index: int) -> Dict[str, Any]:
     return QUESTIONS[index]
+
+
+def _normalize_cargo_type(value: Optional[str]) -> Optional[str]:
+    if not value:
+        return None
+    text = str(value).strip()
+    if text.lower().startswith("культура"):
+        return "Культура"
+    return text
+
+
+def _should_skip_question(question_key: str, data: Dict[str, Any]) -> bool:
+    cargo_type = _normalize_cargo_type(data.get("cargo_type"))
+    if cargo_type in LIQUID_BULK_CARGO and question_key in {"load_method", "unload_method"}:
+        return True
+    return False
 
 
 def _build_reply_keyboard(options: Optional[List[str]], show_back: bool = False) -> Optional[ReplyKeyboardMarkup]:
@@ -265,6 +283,11 @@ async def handle_department(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
 async def ask_question(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     index = context.user_data.get("question_index", 0)
+    while index < len(QUESTIONS) and _should_skip_question(QUESTIONS[index]["key"], context.user_data):
+        context.user_data[QUESTIONS[index]["key"]] = "—"
+        index += 1
+        context.user_data["question_index"] = index
+
     if index >= len(QUESTIONS):
         application_text = _format_application(context.user_data)
         keyboard = ReplyKeyboardMarkup(
