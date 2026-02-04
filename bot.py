@@ -430,6 +430,12 @@ async def handle_department(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     context.user_data["department"] = text
     context.user_data["thread_id"] = THREAD_IDS[text]
     
+    # Видалити повідомлення користувача
+    try:
+        await update.message.delete()
+    except:
+        pass
+    
     # Якщо редагується department - повернутися до підтвердження
     if context.user_data.get("editing_department"):
         context.user_data.pop("editing_department", None)
