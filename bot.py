@@ -162,6 +162,9 @@ def _should_skip_question(question_key: str, data: Dict[str, Any]) -> bool:
     cargo_type = _normalize_cargo_type(data.get("cargo_type"))
     if cargo_type in LIQUID_BULK_CARGO and question_key in {"load_method", "unload_method"}:
         return True
+    size_type = data.get("size_type", "").strip()
+    if size_type == "Насип" and question_key == "unload_method":
+        return True
     return False
 
 
@@ -339,7 +342,11 @@ async def handle_department(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 async def ask_question(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     index = context.user_data.get("question_index", 0)
     while index < len(QUESTIONS) and _should_skip_question(QUESTIONS[index]["key"], context.user_data):
-        context.user_data[QUESTIONS[index]["key"]] = "—"
+        q_key = QUESTIONS[index]["key"]
+        if q_key == "unload_method" and context.user_data.get("size_type") == "Насип":
+            context.user_data[q_key] = "Самоскид"
+        else:
+            context.user_data[q_key] = "—"
         index += 1
         context.user_data["question_index"] = index
 
