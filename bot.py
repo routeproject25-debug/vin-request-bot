@@ -541,15 +541,32 @@ async def ask_question(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
 
     if index >= len(QUESTIONS):
         application_text = _format_application(context.user_data)
-        keyboard = ReplyKeyboardMarkup(
-            [[KeyboardButton(text="ТАК")], [KeyboardButton(text="✏️ Редагувати поля")]],
-            resize_keyboard=True,
-            one_time_keyboard=True,
-        )
-        await update.message.reply_text(
-            "Перевірте заявку:\n\n" + application_text + "\n\nНадіслати заявку в чат?",
-            reply_markup=keyboard,
-        )
+        
+        # Для швидкої заявки запитати про додаткову інформацію ДО надіслання
+        if context.user_data.get("quick_mode"):
+            keyboard = ReplyKeyboardMarkup(
+                [
+                    [KeyboardButton(text="📤 Надіслати")],
+                    [KeyboardButton(text="✏️ Додати деталі")],
+                ],
+                resize_keyboard=True,
+                one_time_keyboard=True,
+            )
+            await update.message.reply_text(
+                "Перевірте заявку:\n\n" + application_text + "\n\n💡 Це швидка заявка. Хочете додати додаткову інформацію або надіслати як є?",
+                reply_markup=keyboard,
+            )
+        else:
+            # Повна заявка - звичайне підтвердження
+            keyboard = ReplyKeyboardMarkup(
+                [[KeyboardButton(text="ТАК")], [KeyboardButton(text="✏️ Редагувати поля")]],
+                resize_keyboard=True,
+                one_time_keyboard=True,
+            )
+            await update.message.reply_text(
+                "Перевірте заявку:\n\n" + application_text + "\n\nНадіслати заявку в чат?",
+                reply_markup=keyboard,
+            )
         return CONFIRM
 
     question = _get_question(index)
@@ -1079,18 +1096,16 @@ async def handle_edit_choice(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 
 async def confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    text = (update.message.text or "").strip().lower()
+    text = (update.message.text or "").strip()
 
-    if text == "✏️ редагувати поля":
+    # Швидка заявка - "Додати деталі"
+    if text == "✏️ Додати деталі":
+        context.user_data["quick_mode"] = False  # Виходимо зі швидкого режиму
         return await show_edit_fields(update, context)
-
-    if text == "почати спочатку":
-        context.user_data.clear()
-        context.user_data["question_index"] = 0
-        await update.message.reply_text("Заповнення скинуто. Починаємо спочатку.")
-        return await ask_question(update, context)
-
-    if text == "так":
+    
+    # Швидка заявка - "Надіслати"
+    if text == "📤 Надіслати":
+        # Надіслати заявку одразу (ті ж дії що й "ТАК")
         chat_id = os.getenv("TARGET_CHAT_ID")
         if not chat_id:
             await update.message.reply_text(
@@ -1113,31 +1128,61 @@ async def confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
             message_thread_id=thread_id,
         )
         
-        # Якщо це була швидка заявка - запитати про додаткову інформацію
-        if context.user_data.get("quick_mode"):
-            keyboard = ReplyKeyboardMarkup(
-                [[KeyboardButton(text="✅ Так, додати деталі")], [KeyboardButton(text="❌ Ні, надіслано")]],
-                resize_keyboard=True,
-                one_time_keyboard=True
-            )
+        # Повернення до стартового меню
+        keyboard = ReplyKeyboardMarkup(
+            [[KeyboardButton(text="📝 Нова заявка")]],
+            resize_keyboard=True,
+        )
+        await update.message.reply_text(
+            "✅ Заявку надіслано!",
+            reply_markup=keyboard
+        )
+        context.user_data.clear()
+        return ConversationHandler.END
+
+    if text.lower() == "✏️ редагувати поля":
+        return await show_edit_fields(update, context)
+
+    if text.lower() == "почати спочатку":
+        context.user_data.clear()
+        context.user_data["question_index"] = 0
+        await update.message.reply_text("Заповнення скинуто. Починаємо спочатку.")
+        return await ask_question(update, context)
+
+    if text.lower() == "так":
+        chat_id = os.getenv("TARGET_CHAT_ID")
+        if not chat_id:
             await update.message.reply_text(
-                "✅ Заявку надіслано!\n\nХочете додати додаткову інформацію?",
-                reply_markup=keyboard
+                "Не задано TARGET_CHAT_ID. Додайте змінну середовища.",
+                reply_markup=ReplyKeyboardRemove(),
             )
-            # Зберігаємо стан для обробки у handler_save_template_response
-            return SAVE_TEMPLATE_CONFIRM
-        else:
-            # Запропонувати зберегти як шаблон
-            keyboard = ReplyKeyboardMarkup(
-                [[KeyboardButton(text="💾 Зберегти як шаблон")], [KeyboardButton(text="📝 Нова заявка")]],
-                resize_keyboard=True,
-            )
-            await update.message.reply_text(
-                "Заявку надіслано. Бажаєте зберегти дані як шаблон для повторного використання?",
-                reply_markup=keyboard
-            )
-            context.user_data["pending_save_template"] = True
-            return SAVE_TEMPLATE_CONFIRM
+            return ConversationHandler.END
+
+        application_text = _format_application(context.user_data)
+        thread_id = context.user_data.get("thread_id")
+        
+        # Додаємо згадку користувача
+        user = update.effective_user
+        user_mention = f"@{user.username}" if user.username else user.full_name
+        notification = f"📋 {user_mention} створив нову заявку:\n\n{application_text}"
+        
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=notification,
+            message_thread_id=thread_id,
+        )
+        
+        # Запропонувати зберегти як шаблон (для всіх типів заявок)
+        keyboard = ReplyKeyboardMarkup(
+            [[KeyboardButton(text="💾 Зберегти як шаблон")], [KeyboardButton(text="📝 Нова заявка")]],
+            resize_keyboard=True,
+        )
+        await update.message.reply_text(
+            "✅ Заявку надіслано!\n\nБажаєте зберегти дані як шаблон для повторного використання?",
+            reply_markup=keyboard
+        )
+        context.user_data["pending_save_template"] = True
+        return SAVE_TEMPLATE_CONFIRM
 
     await update.message.reply_text("Будь ласка, оберіть ТАК або Почати спочатку.")
     return CONFIRM
@@ -1147,18 +1192,7 @@ async def handle_save_template_response(update: Update, context: ContextTypes.DE
     """Обробка відповіді щодо збереження шаблону після відправлення заявки"""
     text = (update.message.text or "").strip()
     
-    # Швидка заявка - запитання про додаткові деталі
-    if text == "✅ Так, додати деталі":
-        # Якщо користувач хочет додати деталі, потрібно перейти до меню редагування
-        context.user_data["quick_mode"] = False  # Вихідимо зі швидкого режиму
-        return await show_edit_fields(update, context)
-    
-    elif text == "❌ Ні, надіслано":
-        # Повернення до стартового меню
-        context.user_data.clear()
-        return await show_start_menu(update, context)
-    
-    elif text == "💾 Зберегти як шаблон":
+    if text == "💾 Зберегти як шаблон":
         await update.message.reply_text(
             "Як назвати цей шаблон?",
             reply_markup=ReplyKeyboardRemove()
