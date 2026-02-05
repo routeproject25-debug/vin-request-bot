@@ -387,6 +387,7 @@ async def handle_start_menu_choice(update: Update, context: ContextTypes.DEFAULT
             "Продовжуємо заповнення...",
             reply_markup=ReplyKeyboardRemove(),
         )
+        context.user_data["last_question_message_id"] = None
         return await ask_question(update, context)
     elif text == "Почати спочатку":
         context.user_data.clear()
@@ -396,10 +397,11 @@ async def handle_start_menu_choice(update: Update, context: ContextTypes.DEFAULT
             resize_keyboard=True,
             one_time_keyboard=True,
         )
-        await update.message.reply_text(
+        bot_message = await update.message.reply_text(
             "Запит від:",
             reply_markup=keyboard,
         )
+        context.user_data["last_question_message_id"] = bot_message.message_id
         return DEPARTMENT
     # Новий вибір - нова заявка чи шаблон
     elif text == "📝 Нова заявка":
@@ -410,10 +412,11 @@ async def handle_start_menu_choice(update: Update, context: ContextTypes.DEFAULT
             resize_keyboard=True,
             one_time_keyboard=True,
         )
-        await update.message.reply_text(
+        bot_message = await update.message.reply_text(
             "Запит від:",
             reply_markup=keyboard,
         )
+        context.user_data["last_question_message_id"] = bot_message.message_id
         return DEPARTMENT
     elif text == "📋 Завантажити шаблон":
         return await show_templates_list(update, context)
@@ -566,12 +569,25 @@ async def handle_answer(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     if question["key"] == "cargo_type" and text.lower() in ["зерно", "насіння"]:
         context.user_data["cargo_type_prefix"] = text
         keyboard = _build_reply_keyboard(CROP_TYPES, show_back=True)
+        
         # Видалити відповідь користувача
         try:
             await update.message.delete()
         except:
             pass
-        # Зберегти message_id питання про культуру
+        
+        # Видалити попереднє питання "Вид вантажу:"
+        try:
+            last_msg_id = context.user_data.get("last_question_message_id")
+            if last_msg_id:
+                await context.bot.delete_message(
+                    chat_id=update.effective_chat.id,
+                    message_id=last_msg_id
+                )
+        except:
+            pass
+        
+        # Зберегти message_id нового питання про культуру
         bot_message = await update.message.reply_text("Оберіть культуру:", reply_markup=keyboard)
         context.user_data["last_question_message_id"] = bot_message.message_id
         return CROP_TYPE
