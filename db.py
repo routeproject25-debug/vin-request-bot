@@ -1,33 +1,52 @@
-import sqlite3
+import os
 import json
 import logging
 from typing import Optional, List, Dict, Any
 from datetime import datetime
+import psycopg2
+from psycopg2.extras import RealDictCursor
 
-DB_PATH = "requests.db"
+# Отримуємо DATABASE_URL з змінних середовища
+DATABASE_URL = os.getenv("DATABASE_URL")
 
 logger = logging.getLogger(__name__)
+
+
+def get_connection():
+    """Отримати з'єднання з PostgreSQL"""
+    if not DATABASE_URL:
+        logger.error("DATABASE_URL is not set")
+        raise RuntimeError("DATABASE_URL environment variable is not set")
+    
+    try:
+        conn = psycopg2.connect(DATABASE_URL)
+        return conn
+    except Exception as e:
+        logger.error(f"Error connecting to database: {e}")
+        raise
 
 
 def init_db():
     """Ініціалізація БД та таблиць"""
     try:
-        conn = sqlite3.connect(DB_PATH)
+        conn = get_connection()
         cursor = conn.cursor()
         
+        # Таблиця шаблонів
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS templates (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id SERIAL PRIMARY KEY,
                 user_id INTEGER NOT NULL,
                 template_name TEXT NOT NULL,
-                template_data TEXT NOT NULL,
+                template_data JSONB NOT NULL,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
         
+        # Таблиця контактів
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS contacts (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id SERIAL PRIMARY KEY,
                 user_id INTEGER NOT NULL,
                 contact_type TEXT NOT NULL,
                 contact_value TEXT NOT NULL,
@@ -35,7 +54,18 @@ def init_db():
             )
         """)
         
+        # Індекси для швидкості
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_templates_user_id 
+            ON templates(user_id)
+        """)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_contacts_user_id 
+            ON contacts(user_id)
+        """)
+        
         conn.commit()
+        cursor.close()
         conn.close()
         logger.info("Database initialized successfully")
     except Exception as e:
@@ -45,19 +75,19 @@ def init_db():
 def save_template(user_id: int, template_name: str, template_data: Dict[str, Any]) -> bool:
     """Зберегти шаблон заявки"""
     try:
-        conn = sqlite3.connect(DB_PATH)
+        conn = get_connection()
         cursor = conn.cursor()
         
-        template_json = json.dumps(template_data, ensure_ascii=False)
         cursor.execute(
             """
             INSERT INTO templates (user_id, template_name, template_data)
-            VALUES (?, ?, ?)
+            VALUES (%s, %s, %s)
             """,
-            (user_id, template_name, template_json)
+            (user_id, template_name, json.dumps(template_data))
         )
         
         conn.commit()
+        cursor.close()
         conn.close()
         logger.info(f"Template '{template_name}' saved for user {user_id}")
         return True
@@ -67,76 +97,75 @@ def save_template(user_id: int, template_name: str, template_data: Dict[str, Any
 
 
 def get_user_templates(user_id: int) -> List[Dict[str, Any]]:
-    """Отримати список всіх шаблонів користувача"""
+    """Отримати всі шаблони користувача"""
     try:
-        conn = sqlite3.connect(DB_PATH)
-        cursor = conn.cursor()
+        conn = get_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
         
         cursor.execute(
             """
-            SELECT id, template_name, created_at 
-            FROM templates 
-            WHERE user_id = ? 
+            SELECT id, template_name, created_at
+            FROM templates
+            WHERE user_id = %s
             ORDER BY created_at DESC
             """,
             (user_id,)
         )
         
-        rows = cursor.fetchall()
+        templates = cursor.fetchall()
+        cursor.close()
         conn.close()
         
-        return [
-            {
-                "id": row[0],
-                "name": row[1],
-                "created_at": row[2]
-            }
-            for row in rows
-        ]
+        return [dict(t) for t in templates]
     except Exception as e:
-        logger.error(f"Error getting templates: {e}")
+        logger.error(f"Error fetching templates: {e}")
         return []
 
 
 def get_template(template_id: int) -> Optional[Dict[str, Any]]:
     """Отримати конкретний шаблон"""
     try:
-        conn = sqlite3.connect(DB_PATH)
-        cursor = conn.cursor()
+        conn = get_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
         
         cursor.execute(
             """
-            SELECT id, template_name, template_data 
-            FROM templates 
-            WHERE id = ?
+            SELECT id, template_name, template_data
+            FROM templates
+            WHERE id = %s
             """,
             (template_id,)
         )
         
-        row = cursor.fetchone()
+        template = cursor.fetchone()
+        cursor.close()
         conn.close()
         
-        if row:
+        if template:
             return {
-                "id": row[0],
-                "name": row[1],
-                "data": json.loads(row[2])
+                "id": template["id"],
+                "name": template["template_name"],
+                "data": json.loads(template["template_data"])
             }
         return None
     except Exception as e:
-        logger.error(f"Error getting template: {e}")
+        logger.error(f"Error fetching template: {e}")
         return None
 
 
 def delete_template(template_id: int) -> bool:
     """Видалити шаблон"""
     try:
-        conn = sqlite3.connect(DB_PATH)
+        conn = get_connection()
         cursor = conn.cursor()
         
-        cursor.execute("DELETE FROM templates WHERE id = ?", (template_id,))
+        cursor.execute(
+            "DELETE FROM templates WHERE id = %s",
+            (template_id,)
+        )
         
         conn.commit()
+        cursor.close()
         conn.close()
         logger.info(f"Template {template_id} deleted")
         return True
@@ -145,50 +174,59 @@ def delete_template(template_id: int) -> bool:
         return False
 
 
-def save_contacts(user_id: int, contact_type: str, contact_value: str) -> bool:
-    """Зберегти контакт"""
+def save_contacts(user_id: int, contacts: List[Dict[str, str]]) -> bool:
+    """Зберегти контакти користувача"""
     try:
-        conn = sqlite3.connect(DB_PATH)
+        conn = get_connection()
         cursor = conn.cursor()
         
-        cursor.execute(
-            """
-            INSERT INTO contacts (user_id, contact_type, contact_value)
-            VALUES (?, ?, ?)
-            """,
-            (user_id, contact_type, contact_value)
-        )
+        # Видалити старі контакти
+        cursor.execute("DELETE FROM contacts WHERE user_id = %s", (user_id,))
+        
+        # Додати нові
+        for contact in contacts:
+            cursor.execute(
+                """
+                INSERT INTO contacts (user_id, contact_type, contact_value)
+                VALUES (%s, %s, %s)
+                """,
+                (user_id, contact.get("type", "general"), contact.get("value", ""))
+            )
         
         conn.commit()
+        cursor.close()
         conn.close()
-        logger.info(f"Contact saved for user {user_id}")
+        logger.info(f"Contacts saved for user {user_id}")
         return True
     except Exception as e:
-        logger.error(f"Error saving contact: {e}")
+        logger.error(f"Error saving contacts: {e}")
         return False
 
 
-def get_user_contacts(user_id: int, contact_type: str) -> List[str]:
-    """Отримати контакти користувача за типом"""
+def get_user_contacts(user_id: int) -> List[Dict[str, str]]:
+    """Отримати контакти користувача"""
     try:
-        conn = sqlite3.connect(DB_PATH)
-        cursor = conn.cursor()
+        conn = get_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
         
         cursor.execute(
             """
-            SELECT DISTINCT contact_value 
-            FROM contacts 
-            WHERE user_id = ? AND contact_type = ? 
-            ORDER BY created_at DESC 
-            LIMIT 5
+            SELECT contact_type, contact_value
+            FROM contacts
+            WHERE user_id = %s
+            ORDER BY created_at DESC
             """,
-            (user_id, contact_type)
+            (user_id,)
         )
         
-        rows = cursor.fetchall()
+        contacts = cursor.fetchall()
+        cursor.close()
         conn.close()
         
-        return [row[0] for row in rows]
+        return [
+            {"type": c["contact_type"], "value": c["contact_value"]}
+            for c in contacts
+        ]
     except Exception as e:
-        logger.error(f"Error getting contacts: {e}")
+        logger.error(f"Error fetching contacts: {e}")
         return []
