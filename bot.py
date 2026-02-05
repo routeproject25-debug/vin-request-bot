@@ -290,7 +290,10 @@ async def show_start_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     user_id = update.effective_user.id
     templates = db.get_user_templates(user_id)
     
-    buttons = [[KeyboardButton(text="📝 Нова заявка")]]
+    buttons = [
+        [KeyboardButton(text="📝 Нова заявка")],
+        [KeyboardButton(text="⚡ Швидка заявка")]
+    ]
     
     if templates:
         buttons.append([KeyboardButton(text="📋 Завантажити шаблон")])
