@@ -160,6 +160,21 @@ def _normalize_cargo_type(value: Optional[str]) -> Optional[str]:
 
 
 def _should_skip_question(question_key: str, data: Dict[str, Any]) -> bool:
+    # У швидкій заявці пропускати деякі поля
+    if data.get("quick_mode"):
+        # Поля які пропускати в швидкій режимі
+        quick_mode_skip = {
+            "size_type",           # Габарит/негабарит
+            "load_method",        # Спосіб завантаження
+            "unload_method",      # Спосіб розвантаження
+            "load_contact",       # Контакт на завантаженні
+            "unload_contact",     # Контакт на розвантаженні
+            "notes",              # Примітки
+            "company",            # Підприємство (встановлюється автоматично)
+        }
+        if question_key in quick_mode_skip:
+            return True
+    
     cargo_type = _normalize_cargo_type(data.get("cargo_type"))
     if cargo_type in LIQUID_BULK_CARGO and question_key in {"load_method", "unload_method"}:
         return True
@@ -408,6 +423,7 @@ async def handle_start_menu_choice(update: Update, context: ContextTypes.DEFAULT
     elif text == "📝 Нова заявка":
         context.user_data.clear()
         context.user_data["question_index"] = 0
+        context.user_data["quick_mode"] = False
         keyboard = ReplyKeyboardMarkup(
             [[KeyboardButton(text="Тваринництво")], [KeyboardButton(text="Виробництво")]],
             resize_keyboard=True,
@@ -419,6 +435,26 @@ async def handle_start_menu_choice(update: Update, context: ContextTypes.DEFAULT
         )
         context.user_data["last_question_message_id"] = bot_message.message_id
         return DEPARTMENT
+    
+    # Швидка заявка
+    elif text == "⚡ Швидка заявка":
+        context.user_data.clear()
+        context.user_data["question_index"] = 0
+        context.user_data["quick_mode"] = True
+        context.user_data["company"] = "Вінницький ХАБ"  # По замовчуванню
+        keyboard = ReplyKeyboardMarkup(
+            [[KeyboardButton(text="Тваринництво")], [KeyboardButton(text="Виробництво")]],
+            resize_keyboard=True,
+            one_time_keyboard=True,
+        )
+        bot_message = await update.message.reply_text(
+            "Запит від:",
+            reply_markup=keyboard,
+        )
+        context.user_data["last_question_message_id"] = bot_message.message_id
+        return DEPARTMENT
+    
+    # Завантажити шаблон
     elif text == "📋 Завантажити шаблон":
         return await show_templates_list(update, context)
     else:
@@ -1074,17 +1110,31 @@ async def confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
             message_thread_id=thread_id,
         )
         
-        # Запропонувати зберегти як шаблон
-        keyboard = ReplyKeyboardMarkup(
-            [[KeyboardButton(text="💾 Зберегти як шаблон")], [KeyboardButton(text="📝 Нова заявка")]],
-            resize_keyboard=True,
-        )
-        await update.message.reply_text(
-            "Заявку надіслано. Бажаєте зберегти дані як шаблон для повторного використання?",
-            reply_markup=keyboard
-        )
-        context.user_data["pending_save_template"] = True
-        return SAVE_TEMPLATE_CONFIRM
+        # Якщо це була швидка заявка - запитати про додаткову інформацію
+        if context.user_data.get("quick_mode"):
+            keyboard = ReplyKeyboardMarkup(
+                [[KeyboardButton(text="✅ Так, додати деталі")], [KeyboardButton(text="❌ Ні, надіслано")]],
+                resize_keyboard=True,
+                one_time_keyboard=True
+            )
+            await update.message.reply_text(
+                "✅ Заявку надіслано!\n\nХочете додати додаткову інформацію?",
+                reply_markup=keyboard
+            )
+            # Зберігаємо стан для обробки у handler_save_template_response
+            return SAVE_TEMPLATE_CONFIRM
+        else:
+            # Запропонувати зберегти як шаблон
+            keyboard = ReplyKeyboardMarkup(
+                [[KeyboardButton(text="💾 Зберегти як шаблон")], [KeyboardButton(text="📝 Нова заявка")]],
+                resize_keyboard=True,
+            )
+            await update.message.reply_text(
+                "Заявку надіслано. Бажаєте зберегти дані як шаблон для повторного використання?",
+                reply_markup=keyboard
+            )
+            context.user_data["pending_save_template"] = True
+            return SAVE_TEMPLATE_CONFIRM
 
     await update.message.reply_text("Будь ласка, оберіть ТАК або Почати спочатку.")
     return CONFIRM
@@ -1094,7 +1144,18 @@ async def handle_save_template_response(update: Update, context: ContextTypes.DE
     """Обробка відповіді щодо збереження шаблону після відправлення заявки"""
     text = (update.message.text or "").strip()
     
-    if text == "💾 Зберегти як шаблон":
+    # Швидка заявка - запитання про додаткові деталі
+    if text == "✅ Так, додати деталі":
+        # Якщо користувач хочет додати деталі, потрібно перейти до меню редагування
+        context.user_data["quick_mode"] = False  # Вихідимо зі швидкого режиму
+        return await show_edit_fields(update, context)
+    
+    elif text == "❌ Ні, надіслано":
+        # Повернення до стартового меню
+        context.user_data.clear()
+        return await show_start_menu(update, context)
+    
+    elif text == "💾 Зберегти як шаблон":
         await update.message.reply_text(
             "Як назвати цей шаблон?",
             reply_markup=ReplyKeyboardRemove()
