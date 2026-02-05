@@ -434,7 +434,11 @@ async def handle_department(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     # Видалити повідомлення користувача та попереднє питання
     try:
         await update.message.delete()
-        # Видалити попереднє питання "Запит від:"
+    except:
+        pass
+    
+    # Видалити попереднє питання "Запит від:" та показати нове з відповіддю
+    try:
         last_msg_id = context.user_data.get("last_question_message_id")
         if last_msg_id:
             try:
@@ -444,11 +448,11 @@ async def handle_department(update: Update, context: ContextTypes.DEFAULT_TYPE) 
                 )
             except:
                 pass
-            # Показати нове повідомлення з відповіддю
-            await context.bot.send_message(
-                chat_id=update.effective_chat.id,
-                text=f"Запит від: ✅ {text}"
-            )
+        # Завжди показати нове повідомлення з відповіддю
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            text=f"Запит від: ✅ {text}"
+        )
     except:
         pass
     
