@@ -882,11 +882,10 @@ async def handle_calendar(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         elif date_type == "period":
             if "date_period_start" not in context.user_data:
                 context.user_data["date_period_start"] = selected_date
-                await update.callback_query.edit_message_text(f"Оберіть початкову дату: ✅ {selected_date}")
                 
                 # Показуємо календар для кінцевої дати
                 calendar = _build_month_calendar(selected_dt.year, selected_dt.month)
-                await update.callback_query.message.reply_text(
+                await update.callback_query.edit_message_text(
                     "Оберіть кінцеву дату перевезення:",
                     reply_markup=calendar
                 )
