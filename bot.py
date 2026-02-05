@@ -81,7 +81,7 @@ QUESTIONS: List[Dict[str, Any]] = [
         "key": "cargo_type",
         "label": "Вид вантажу",
         "prompt": "Вид вантажу:",
-        "options": ["Культура", "АМ вода", "КАС", "РКД", "Насіння", "Інше"],
+        "options": ["Зерно", "Насіння", "АМ вода", "КАС", "РКД", "Інше"],
     },
     {
         "key": "size_type",
@@ -350,10 +350,11 @@ async def handle_template_select(update: Update, context: ContextTypes.DEFAULT_T
         resize_keyboard=True,
         one_time_keyboard=True,
     )
-    await update.message.reply_text(
+    bot_message = await update.message.reply_text(
         f"📋 Завантажено шаблон '{text}'\n\nЗапит від:",
         reply_markup=keyboard,
     )
+    context.user_data["last_question_message_id"] = bot_message.message_id
     return DEPARTMENT
 
 
@@ -430,9 +431,24 @@ async def handle_department(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     context.user_data["department"] = text
     context.user_data["thread_id"] = THREAD_IDS[text]
     
-    # Видалити повідомлення користувача
+    # Видалити повідомлення користувача та попереднє питання
     try:
         await update.message.delete()
+        # Видалити попереднє питання "Запит від:"
+        last_msg_id = context.user_data.get("last_question_message_id")
+        if last_msg_id:
+            try:
+                await context.bot.delete_message(
+                    chat_id=update.effective_chat.id,
+                    message_id=last_msg_id
+                )
+            except:
+                pass
+            # Показати нове повідомлення з відповіддю
+            await context.bot.send_message(
+                chat_id=update.effective_chat.id,
+                text=f"Запит від: ✅ {text}"
+            )
     except:
         pass
     
@@ -542,9 +558,9 @@ async def handle_answer(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
         await update.message.reply_text("Введіть своє значення:", reply_markup=ReplyKeyboardRemove())
         return CUSTOM_INPUT
 
-    # Якщо вибрано "культура", запитати конкретну культуру
-    if question["key"] == "cargo_type" and text.lower() == "культура":
-        context.user_data["cargo_type_prefix"] = "Культура"
+    # Якщо вибрано "зерно" або "насіння", запитати конкретну культуру
+    if question["key"] == "cargo_type" and text.lower() in ["зерно", "насіння"]:
+        context.user_data["cargo_type_prefix"] = text
         keyboard = _build_reply_keyboard(CROP_TYPES, show_back=True)
         # Видалити відповідь користувача
         try:
@@ -650,7 +666,8 @@ async def handle_crop_type(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     
     # Якщо це кастомне введення
     if context.user_data.get("awaiting_custom_crop"):
-        context.user_data["cargo_type"] = f"Культура: {text}"
+        prefix = context.user_data.get("cargo_type_prefix", "Зерно")
+        context.user_data["cargo_type"] = f"{prefix}: {text}"
         context.user_data.pop("awaiting_custom_crop", None)
         context.user_data.pop("cargo_type_prefix", None)
         index = context.user_data.get("question_index", 0)
@@ -685,7 +702,8 @@ async def handle_crop_type(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     
     # Якщо вибрано зі списку
     if text in CROP_TYPES:
-        context.user_data["cargo_type"] = f"Культура: {text}"
+        prefix = context.user_data.get("cargo_type_prefix", "Зерно")
+        context.user_data["cargo_type"] = f"{prefix}: {text}"
         context.user_data.pop("cargo_type_prefix", None)
         index = context.user_data.get("question_index", 0)
         
@@ -703,7 +721,7 @@ async def handle_crop_type(update: Update, context: ContextTypes.DEFAULT_TYPE) -
                     pass
                 await context.bot.send_message(
                     chat_id=update.effective_chat.id,
-                    text=f"Оберіть культуру: ✅ {text}"
+                    text=f"Вид вантажу: {prefix} ✅ {text}"
                 )
         except:
             pass
@@ -797,7 +815,7 @@ async def handle_calendar(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         elif date_type == "period":
             if "date_period_start" not in context.user_data:
                 context.user_data["date_period_start"] = selected_date
-                await update.callback_query.edit_message_text(f"Початкова дата: {selected_date}")
+                await update.callback_query.edit_message_text(f"✅ {selected_date}")
                 
                 # Показуємо календар для кінцевої дати
                 calendar = _build_month_calendar(selected_dt.year, selected_dt.month)
@@ -830,7 +848,7 @@ async def handle_period_end(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         context.user_data.pop("date_period_start", None)
         
         await update.callback_query.edit_message_text(
-            f"Період перевезення: {start_date} - {end_date}"
+            f"✅ {end_date}"
         )
         
         # Переходимо до наступного питання
