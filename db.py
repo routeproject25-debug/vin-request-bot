@@ -149,10 +149,12 @@ def get_template(template_id: int) -> Optional[Dict[str, Any]]:
         conn.close()
         
         if template:
+            raw_data = template["template_data"]
+            data = json.loads(raw_data) if isinstance(raw_data, str) else raw_data
             return {
                 "id": template["id"],
                 "name": template["template_name"],
-                "data": json.loads(template["template_data"])
+                "data": data,
             }
         return None
     except Exception as e:
