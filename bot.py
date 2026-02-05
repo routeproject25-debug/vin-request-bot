@@ -30,7 +30,7 @@ logging.basicConfig(
     level=logging.INFO,
 )
 
-START, DEPARTMENT, QUESTION, CUSTOM_INPUT, CROP_TYPE, CONFIRM, EDIT, DATE_TYPE, DATE_CALENDAR, DATE_PERIOD_END, LOAD_TEMPLATE, TEMPLATE_SELECT, SAVE_TEMPLATE_NAME, SAVE_TEMPLATE_CONFIRM = range(14)
+START, DEPARTMENT, QUESTION, CUSTOM_INPUT, CROP_TYPE, CONFIRM, EDIT, DATE_TYPE, DATE_CALENDAR, DATE_PERIOD_END, LOAD_TEMPLATE, TEMPLATE_SELECT, SAVE_TEMPLATE_NAME, SAVE_TEMPLATE_CONFIRM, DELETE_TEMPLATE_CONFIRM = range(15)
 
 THREAD_IDS = {
     "Тваринництво": 2,
@@ -297,6 +297,7 @@ async def show_start_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     
     if templates:
         buttons.append([KeyboardButton(text="📋 Завантажити шаблон")])
+        buttons.append([KeyboardButton(text="🗑️ Видалити шаблон")])
     
     keyboard = ReplyKeyboardMarkup(buttons, resize_keyboard=True, one_time_keyboard=True)
     await update.message.reply_text(
@@ -323,7 +324,7 @@ async def show_templates_list(update: Update, context: ContextTypes.DEFAULT_TYPE
     
     keyboard = ReplyKeyboardMarkup(buttons, resize_keyboard=True, one_time_keyboard=True)
     await update.message.reply_text(
-        "Оберіть шаблон:",
+        "Оберіть шаблон для видалення:" if context.user_data.get("delete_mode") else "Оберіть шаблон:",
         reply_markup=keyboard
     )
     return TEMPLATE_SELECT
@@ -335,6 +336,7 @@ async def handle_template_select(update: Update, context: ContextTypes.DEFAULT_T
     user_id = update.effective_user.id
     
     if text == "⬅️ Назад":
+        context.user_data.pop("delete_mode", None)
         return await show_start_menu(update, context)
     
     templates = db.get_user_templates(user_id)
@@ -345,6 +347,23 @@ async def handle_template_select(update: Update, context: ContextTypes.DEFAULT_T
             selected_template = db.get_template(t["id"])
             break
     
+    if context.user_data.get("delete_mode"):
+        if selected_template:
+            context.user_data["delete_template_id"] = selected_template["id"]
+            context.user_data["delete_template_name"] = selected_template["name"]
+            keyboard = ReplyKeyboardMarkup(
+                [[KeyboardButton(text="✅ Так")], [KeyboardButton(text="❌ Ні")]],
+                resize_keyboard=True,
+                one_time_keyboard=True,
+            )
+            await update.message.reply_text(
+                f"Видалити шаблон '{selected_template['name']}'?",
+                reply_markup=keyboard,
+            )
+            return DELETE_TEMPLATE_CONFIRM
+        await update.message.reply_text("Шаблон не знайдено.")
+        return TEMPLATE_SELECT
+
     if not selected_template:
         await update.message.reply_text("Шаблон не знайдено.")
         return TEMPLATE_SELECT
@@ -375,6 +394,31 @@ async def handle_template_select(update: Update, context: ContextTypes.DEFAULT_T
     )
     context.user_data["last_question_message_id"] = bot_message.message_id
     return DEPARTMENT
+
+
+async def handle_delete_template_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Підтвердження видалення шаблону"""
+    text = (update.message.text or "").strip()
+
+    if text == "✅ Так":
+        template_id = context.user_data.get("delete_template_id")
+        template_name = context.user_data.get("delete_template_name")
+        if template_id:
+            db.delete_template(template_id)
+        if template_name:
+            await update.message.reply_text(f"✅ Шаблон '{template_name}' видалено.")
+        else:
+            await update.message.reply_text("✅ Шаблон видалено.")
+    elif text == "❌ Ні":
+        await update.message.reply_text("❎ Видалення скасовано.")
+    else:
+        await update.message.reply_text("Оберіть: ✅ Так або ❌ Ні.")
+        return DELETE_TEMPLATE_CONFIRM
+
+    context.user_data.pop("delete_mode", None)
+    context.user_data.pop("delete_template_id", None)
+    context.user_data.pop("delete_template_name", None)
+    return await show_start_menu(update, context)
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -459,6 +503,10 @@ async def handle_start_menu_choice(update: Update, context: ContextTypes.DEFAULT
     
     # Завантажити шаблон
     elif text == "📋 Завантажити шаблон":
+        return await show_templates_list(update, context)
+    # Видалити шаблон
+    elif text == "🗑️ Видалити шаблон":
+        context.user_data["delete_mode"] = True
         return await show_templates_list(update, context)
     else:
         await update.message.reply_text("Будь ласка, оберіть опцію.")
@@ -1315,6 +1363,7 @@ def build_app() -> Application:
             START: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_start_menu_choice)],
             LOAD_TEMPLATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_start_menu_choice)],
             TEMPLATE_SELECT: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_template_select)],
+            DELETE_TEMPLATE_CONFIRM: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_delete_template_confirm)],
             DEPARTMENT: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_department)],
             QUESTION: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_answer)],
             CUSTOM_INPUT: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_custom_input)],
