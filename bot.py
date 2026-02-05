@@ -345,6 +345,7 @@ async def handle_template_select(update: Update, context: ContextTypes.DEFAULT_T
     # Інакше - запитати "Запит від:" щоб встановити правильну гілку
     context.user_data.pop("department", None)
     context.user_data.pop("thread_id", None)
+    context.user_data["template_loaded"] = True  # Флаг, що це шаблон
     keyboard = ReplyKeyboardMarkup(
         [[KeyboardButton(text="Тваринництво")], [KeyboardButton(text="Виробництво")]],
         resize_keyboard=True,
@@ -469,8 +470,9 @@ async def handle_department(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         )
         return await ask_question(update, context)
     
-    # Якщо це шаблон (вже є дані) - перейти до підтвердження
-    if len(context.user_data) > 3:  # Більше ніж department, thread_id, question_index
+    # Якщо це завантажений шаблон (є флаг template_loaded) - перейти до підтвердження
+    if context.user_data.get("template_loaded"):
+        context.user_data.pop("template_loaded", None)
         context.user_data["question_index"] = len(QUESTIONS)
         await update.message.reply_text(
             "Форма заповнена з шаблону.",
