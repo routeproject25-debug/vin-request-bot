@@ -538,8 +538,11 @@ async def ask_question(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     
     show_back = index > 0
     keyboard = _build_reply_keyboard(question.get("options"), show_back=show_back)
+    # Прогрес-бар: показувати скільки питань вміще
+    progress = f"({index + 1}/{len(QUESTIONS)})"
+    prompt_with_progress = f"{question['prompt']} {progress}"
     # Зберегти message_id щоб потім редагувати
-    bot_message = await update.message.reply_text(question["prompt"], reply_markup=keyboard)
+    bot_message = await update.message.reply_text(prompt_with_progress, reply_markup=keyboard)
     context.user_data["last_question_message_id"] = bot_message.message_id
     return QUESTION
 
@@ -566,6 +569,18 @@ async def handle_answer(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     if text.lower() == "ввести своє":
         context.user_data["awaiting_custom"] = True
         await update.message.reply_text("Введіть своє значення:", reply_markup=ReplyKeyboardRemove())
+        return CUSTOM_INPUT
+    
+    # Обробка "Інше" для vehicle_type
+    if question["key"] == "vehicle_type" and text == "Інше":
+        context.user_data["awaiting_custom_vehicle_type"] = True
+        await update.message.reply_text("Введіть тип авто:", reply_markup=ReplyKeyboardRemove())
+        return CUSTOM_INPUT
+    
+    # Обробка "Інше" для company
+    if question["key"] == "company" and text == "Інше":
+        context.user_data["awaiting_custom_company"] = True
+        await update.message.reply_text("Введіть підприємство:", reply_markup=ReplyKeyboardRemove())
         return CUSTOM_INPUT
 
     # Якщо вибрано "зерно" або "насіння", запитати конкретну культуру
@@ -594,6 +609,12 @@ async def handle_answer(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
         bot_message = await update.message.reply_text("Оберіть культуру:", reply_markup=keyboard)
         context.user_data["last_question_message_id"] = bot_message.message_id
         return CROP_TYPE
+    
+    # Обробка "Інше" для cargo_type
+    if question["key"] == "cargo_type" and text == "Інше":
+        context.user_data["awaiting_custom_cargo_type"] = True
+        await update.message.reply_text("Введіть тип вантажу:", reply_markup=ReplyKeyboardRemove())
+        return CUSTOM_INPUT
 
     if question.get("options"):
         if text.lower() == "пропустити":
@@ -644,7 +665,31 @@ async def handle_custom_input(update: Update, context: ContextTypes.DEFAULT_TYPE
     text = (update.message.text or "").strip()
     index = context.user_data.get("question_index", 0)
     question = _get_question(index)
-    context.user_data[question["key"]] = text
+    
+    # Обробка "Інше" типів
+    if context.user_data.get("awaiting_custom_vehicle_type"):
+        context.user_data["vehicle_type"] = f"Інше: {text}"
+        context.user_data.pop("awaiting_custom_vehicle_type", None)
+        display_text = f"Тип авто: Інше: ✅ {text}"
+    elif context.user_data.get("awaiting_custom_company"):
+        context.user_data["company"] = f"Інше: {text}"
+        context.user_data.pop("awaiting_custom_company", None)
+        display_text = f"Підприємство: Інше: ✅ {text}"
+    elif context.user_data.get("awaiting_custom_cargo_type"):
+        context.user_data["cargo_type"] = f"Інше: {text}"
+        context.user_data.pop("awaiting_custom_cargo_type", None)
+        display_text = f"Вид вантажу: Інше: ✅ {text}"
+    elif context.user_data.get("awaiting_custom_crop"):
+        prefix = context.user_data.get("cargo_type_prefix", "Зерно")
+        context.user_data["cargo_type"] = f"{prefix}: {text}"
+        context.user_data.pop("awaiting_custom_crop", None)
+        context.user_data.pop("cargo_type_prefix", None)
+        display_text = f"Вид вантажу: {prefix}: ✅ {text}"
+    else:
+        # Генеричне кастомне введення
+        context.user_data[question["key"]] = text
+        display_text = f"{question['prompt']} ✅ {text}"
+    
     context.user_data["awaiting_custom"] = False
     
     # Видалити повідомлення користувача та попереднє питання бота
@@ -663,10 +708,10 @@ async def handle_custom_input(update: Update, context: ContextTypes.DEFAULT_TYPE
             # Надіслати нове повідомлення з відповіддю
             await context.bot.send_message(
                 chat_id=update.effective_chat.id,
-                text=f"{question['prompt']} ✅ {text}"
+                text=display_text
             )
     except Exception as e:
-        # Якщо не вдалося - продовжуємо без редагування
+        logging.error(f"Помилка при обробці кастомного введення: {e}")
         pass
     
     # Якщо редагуємо - повертаємо до підтвердження
