@@ -115,8 +115,15 @@ def get_user_templates(user_id: int) -> List[Dict[str, Any]]:
         templates = cursor.fetchall()
         cursor.close()
         conn.close()
-        
-        return [dict(t) for t in templates]
+
+        return [
+            {
+                "id": t["id"],
+                "name": t["template_name"],
+                "created_at": t["created_at"],
+            }
+            for t in templates
+        ]
     except Exception as e:
         logger.error(f"Error fetching templates: {e}")
         return []
