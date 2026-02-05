@@ -529,10 +529,11 @@ async def ask_question(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
             resize_keyboard=True,
             one_time_keyboard=True,
         )
-        await update.message.reply_text(
+        bot_message = await update.message.reply_text(
             "Оберіть тип перевезення:",
             reply_markup=keyboard
         )
+        context.user_data["last_question_message_id"] = bot_message.message_id
         return DATE_TYPE
     
     show_back = index > 0
@@ -773,6 +774,28 @@ async def handle_date_type(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     
     if text == "📅 Разове перевезення":
         context.user_data["date_type"] = "single"
+        # Видалити повідомлення користувача
+        try:
+            await update.message.delete()
+        except:
+            pass
+        # Показати нове повідомлення з відповідю
+        try:
+            last_msg_id = context.user_data.get("last_question_message_id")
+            if last_msg_id:
+                try:
+                    await context.bot.delete_message(
+                        chat_id=update.effective_chat.id,
+                        message_id=last_msg_id
+                    )
+                except:
+                    pass
+            await context.bot.send_message(
+                chat_id=update.effective_chat.id,
+                text="Оберіть тип перевезення: 📅 Разове ✅"
+            )
+        except:
+            pass
         today = date.today()
         calendar = _build_month_calendar(today.year, today.month)
         await update.message.reply_text(
@@ -782,6 +805,28 @@ async def handle_date_type(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         return DATE_CALENDAR
     elif text == "📆 Період перевезення":
         context.user_data["date_type"] = "period"
+        # Видалити повідомлення користувача
+        try:
+            await update.message.delete()
+        except:
+            pass
+        # Показати нове повідомлення з відповідю
+        try:
+            last_msg_id = context.user_data.get("last_question_message_id")
+            if last_msg_id:
+                try:
+                    await context.bot.delete_message(
+                        chat_id=update.effective_chat.id,
+                        message_id=last_msg_id
+                    )
+                except:
+                    pass
+            await context.bot.send_message(
+                chat_id=update.effective_chat.id,
+                text="Оберіть тип перевезення: 📆 Період ✅"
+            )
+        except:
+            pass
         today = date.today()
         calendar = _build_month_calendar(today.year, today.month)
         await update.message.reply_text(
@@ -837,7 +882,7 @@ async def handle_calendar(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         elif date_type == "period":
             if "date_period_start" not in context.user_data:
                 context.user_data["date_period_start"] = selected_date
-                await update.callback_query.edit_message_text(f"✅ {selected_date}")
+                await update.callback_query.edit_message_text(f"Оберіть початкову дату: ✅ {selected_date}")
                 
                 # Показуємо календар для кінцевої дати
                 calendar = _build_month_calendar(selected_dt.year, selected_dt.month)
@@ -870,7 +915,7 @@ async def handle_period_end(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         context.user_data.pop("date_period_start", None)
         
         await update.callback_query.edit_message_text(
-            f"✅ {end_date}"
+            f"Період перевезення: ✅ {start_date} - {end_date}"
         )
         
         # Переходимо до наступного питання
