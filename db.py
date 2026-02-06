@@ -4,7 +4,7 @@ import logging
 from typing import Optional, List, Dict, Any
 from datetime import datetime
 import psycopg2
-from psycopg2.extras import RealDictCursor
+from psycopg2.extras import RealDictCursor, Json
 
 # Отримуємо DATABASE_URL з змінних середовища
 DATABASE_URL = os.getenv("DATABASE_URL")
@@ -83,7 +83,7 @@ def save_template(user_id: int, template_name: str, template_data: Dict[str, Any
             INSERT INTO templates (user_id, template_name, template_data)
             VALUES (%s, %s, %s)
             """,
-            (user_id, template_name, json.dumps(template_data))
+            (user_id, template_name, Json(template_data))
         )
         
         conn.commit()

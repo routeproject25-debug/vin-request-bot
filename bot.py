@@ -1544,9 +1544,14 @@ async def handle_save_template_name(update: Update, context: ContextTypes.DEFAUL
     
     user_id = update.effective_user.id
     
-    # Зберегти шаблон (залишити department і thread_id)
-    template_data = {k: v for k, v in context.user_data.items() 
-                    if k not in ["question_index", "pending_save_template"]}
+    # Зберегти шаблон (лише стабільні поля)
+    allowed_keys = {q["key"] for q in QUESTIONS} | {
+        "department",
+        "thread_id",
+        "quick_mode",
+        "date_type",
+    }
+    template_data = {k: v for k, v in context.user_data.items() if k in allowed_keys}
     
     success = db.save_template(user_id, template_name, template_data)
     
