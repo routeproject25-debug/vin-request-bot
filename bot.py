@@ -324,7 +324,9 @@ def _format_application(data: Dict[str, Any]) -> str:
         value = data.get(key)
         return value if value else "—"
     
-    now = datetime.now()
+    # Використовуємо часовий пояс Київа (UTC+2)
+    kyiv_tz = pytz.timezone('Europe/Kyiv')
+    now = datetime.now(kyiv_tz)
     date_str = now.strftime("%d.%m.%Y")
     time_str = now.strftime("%H:%M")
 
