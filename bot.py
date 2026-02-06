@@ -1548,16 +1548,24 @@ async def handle_save_template_name(update: Update, context: ContextTypes.DEFAUL
     template_data = {k: v for k, v in context.user_data.items() 
                     if k not in ["question_index", "pending_save_template"]}
     
-    db.save_template(user_id, template_name, template_data)
+    success = db.save_template(user_id, template_name, template_data)
     
-    keyboard = ReplyKeyboardMarkup(
-        [[KeyboardButton(text="📝 Нова заявка")]],
-        resize_keyboard=True,
-    )
-    await update.message.reply_text(
-        f"✅ Шаблон '{template_name}' збережено!",
-        reply_markup=keyboard
-    )
+    if success:
+        keyboard = ReplyKeyboardMarkup(
+            [[KeyboardButton(text="📝 Нова заявка")]],
+            resize_keyboard=True,
+        )
+        await update.message.reply_text(
+            f"✅ Шаблон '{template_name}' збережено!",
+            reply_markup=keyboard
+        )
+    else:
+        await update.message.reply_text(
+            "❌ Помилка при збереженні шаблону. Спробуйте ще раз.",
+            reply_markup=ReplyKeyboardRemove()
+        )
+        return await show_start_menu(update, context)
+    
     context.user_data.clear()
     return ConversationHandler.END
 
