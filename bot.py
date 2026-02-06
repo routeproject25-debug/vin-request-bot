@@ -264,6 +264,7 @@ def _format_application(data: Dict[str, Any]) -> str:
             f"Дата: {date_str}\n"
             f"Час: {time_str}\n\n"
         "ЗАЯВКА НА ПЕРЕВЕЗЕННЯ\n\n"
+        f"Запит від: {val('department')}\n\n"
         "Вимоги до авто:\n"
         f"Тип авто: {val('vehicle_type')}\n\n"
         "Ініціатор заявки:\n"
@@ -1207,7 +1208,6 @@ async def confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
             return ConversationHandler.END
 
         application_text = _format_application(context.user_data)
-        thread_id = context.user_data.get("thread_id")
         
         # Додаємо згадку користувача
         user = update.effective_user
@@ -1217,7 +1217,6 @@ async def confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         await context.bot.send_message(
             chat_id=chat_id,
             text=notification,
-            message_thread_id=thread_id,
         )
         
         # Запропонувати зберегти як шаблон (для всіх типів заявок)
