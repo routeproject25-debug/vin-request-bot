@@ -1,6 +1,7 @@
 import os
 import logging
 import calendar
+import aiohttp
 from typing import Dict, Any, List, Optional, Tuple
 from datetime import datetime, date
 from telegram_bot_calendar import DetailedTelegramCalendar
@@ -30,7 +31,7 @@ logging.basicConfig(
     level=logging.INFO,
 )
 
-START, DEPARTMENT, QUESTION, CUSTOM_INPUT, CROP_TYPE, CONFIRM, EDIT, DATE_TYPE, DATE_CALENDAR, DATE_PERIOD_END, LOAD_TEMPLATE, TEMPLATE_SELECT, SAVE_TEMPLATE_NAME, SAVE_TEMPLATE_CONFIRM, DELETE_TEMPLATE_CONFIRM = range(15)
+START, DEPARTMENT, QUESTION, CUSTOM_INPUT, CROP_TYPE, CONFIRM, EDIT, DATE_TYPE, DATE_CALENDAR, DATE_PERIOD_END, LOAD_TEMPLATE, TEMPLATE_SELECT, SAVE_TEMPLATE_NAME, SAVE_TEMPLATE_CONFIRM, DELETE_TEMPLATE_CONFIRM, CITY_SEARCH_LOAD, CITY_SELECT_LOAD, CITY_SEARCH_UNLOAD, CITY_SELECT_UNLOAD = range(19)
 
 THREAD_IDS = {
     "Тваринництво": 2,
@@ -108,9 +109,16 @@ QUESTIONS: List[Dict[str, Any]] = [
         "options": None,
     },
     {
+        "key": "load_city",
+        "label": "Населений пункт завантаження",
+        "prompt": "Населений пункт завантаження:",
+        "options": None,
+        "use_city_search": True,
+    },
+    {
         "key": "load_place",
-        "label": "Місце завантаження",
-        "prompt": "Місце завантаження:",
+        "label": "Склад завантаження (якщо відомо)",
+        "prompt": "Склад завантаження (якщо відомо):",
         "options": ["Пропустити"],
     },
     {
@@ -126,10 +134,17 @@ QUESTIONS: List[Dict[str, Any]] = [
         "options": ["Пропустити"],
     },
     {
-        "key": "unload_place",
-        "label": "Місце розвантаження",
-        "prompt": "Місце розвантаження:",
+        "key": "unload_city",
+        "label": "Населений пункт розвантаження",
+        "prompt": "Населений пункт розвантаження:",
         "options": None,
+        "use_city_search": True,
+    },
+    {
+        "key": "unload_place",
+        "label": "Склад розвантаження (якщо відомо)",
+        "prompt": "Склад розвантаження (якщо відомо):",
+        "options": ["Пропустити"],
     },
     {
         "key": "unload_method",
@@ -144,6 +159,59 @@ QUESTIONS: List[Dict[str, Any]] = [
         "options": None,
     },
 ]
+
+
+async def search_cities_novaposhta(query: str) -> List[Dict[str, str]]:
+    """Пошук населених пунктів через API Нової Пошти"""
+    api_key = os.getenv("NOVAPOSHTA_API_KEY")
+    if not api_key:
+        logging.error("NOVAPOSHTA_API_KEY не встановлено")
+        return []
+    
+    url = "https://api.novaposhta.ua/v2.0/json/"
+    payload = {
+        "apiKey": api_key,
+        "modelName": "Address",
+        "calledMethod": "searchSettlements",
+        "methodProperties": {
+            "CityName": query,
+            "Limit": "10"
+        }
+    }
+    
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, json=payload) as response:
+                data = await response.json()
+                
+                if not data.get("success"):
+                    return []
+                
+                addresses = data.get("data", [{}])[0].get("Addresses", [])
+                results = []
+                
+                for addr in addresses:
+                    # Формуємо назву: "Місто (Район, Область)"
+                    present = addr.get("Present", "")
+                    area = addr.get("Area", "")
+                    region = addr.get("Region", "")
+                    
+                    if area and region:
+                        display = f"{present} ({area}, {region})"
+                    elif region:
+                        display = f"{present} ({region})"
+                    else:
+                        display = present
+                    
+                    results.append({
+                        "display": display,
+                        "value": present
+                    })
+                
+                return results[:10]
+    except Exception as e:
+        logging.error(f"Error searching cities: {e}")
+        return []
 
 
 def _get_question(index: int) -> Dict[str, Any]:
@@ -276,11 +344,13 @@ def _format_application(data: Dict[str, Any]) -> str:
         f"Обсяг: {val('volume')}\n"
         f"Примітки: {val('notes')}\n\n"
         "Маршрут:\n"
-        f"Дата / період перевезення: {val('date_period')}\n"
-        f"Місце завантаження: {val('load_place')}\n"
+        f"Дата / період перевезення: {val('date_period')}\n\n"
+        f"Населений пункт завантаження: {val('load_city')}\n"
+        f"Склад завантаження: {val('load_place')}\n"
         f"Спосіб завантаження: {val('load_method')}\n"
         f"Контакт на завантаженні: {val('load_contact')}\n\n"
-        f"Місце розвантаження: {val('unload_place')}\n"
+        f"Населений пункт розвантаження: {val('unload_city')}\n"
+        f"Склад розвантаження: {val('unload_place')}\n"
         f"Спосіб розвантаження: {val('unload_method')}\n"
         f"Контакт на розвантаженні: {val('unload_contact')}"
     )
@@ -619,6 +689,27 @@ async def ask_question(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
         return CONFIRM
 
     question = _get_question(index)
+    
+    # Якщо це питання про населений пункт - запускаємо пошук
+    if question.get("use_city_search"):
+        show_back = index > 0
+        buttons = []
+        if show_back:
+            buttons.append([KeyboardButton(text="⬅️ Назад")])
+        
+        keyboard = ReplyKeyboardMarkup(buttons, resize_keyboard=True, one_time_keyboard=True) if buttons else ReplyKeyboardRemove()
+        
+        progress = f"({index + 1}/{len(QUESTIONS)})"
+        prompt_with_progress = f"{question['prompt']} {progress}\n\n💡 Почніть вводити назву населеного пункту..."
+        
+        bot_message = await update.message.reply_text(prompt_with_progress, reply_markup=keyboard)
+        context.user_data["last_question_message_id"] = bot_message.message_id
+        
+        # Визначаємо стан в залежності від типу пункту
+        if question["key"] == "load_city":
+            return CITY_SEARCH_LOAD
+        elif question["key"] == "unload_city":
+            return CITY_SEARCH_UNLOAD
     
     # Якщо це питання про дату - запитуємо тип перевезення
     if question["key"] == "date_period":
@@ -1088,6 +1179,184 @@ async def handle_period_end(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     return DATE_PERIOD_END
 
 
+async def handle_city_search_load(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Обробка введення пошукового запиту для населеного пункту завантаження"""
+    text = (update.message.text or "").strip()
+    
+    if text == "⬅️ Назад":
+        index = context.user_data.get("question_index", 0)
+        if index > 0:
+            context.user_data["question_index"] = index - 1
+        return await ask_question(update, context)
+    
+    # Пошук міст
+    cities = await search_cities_novaposhta(text)
+    
+    if not cities:
+        await update.message.reply_text(
+            "🔍 Нічого не знайдено. Спробуйте інший запит або введіть повну назву вручну."
+        )
+        return CITY_SEARCH_LOAD
+    
+    # Показати варіанти
+    buttons = [[KeyboardButton(text=city["display"])] for city in cities]
+    buttons.append([KeyboardButton(text="✍️ Ввести вручну")])
+    
+    index = context.user_data.get("question_index", 0)
+    if index > 0:
+        buttons.append([KeyboardButton(text="⬅️ Назад")])
+    
+    keyboard = ReplyKeyboardMarkup(buttons, resize_keyboard=True, one_time_keyboard=True)
+    
+    # Зберегти результати пошуку для подальшого вибору
+    context.user_data["city_search_results"] = cities
+    
+    await update.message.reply_text(
+        "Оберіть населений пункт зі списку або введіть вручну:",
+        reply_markup=keyboard
+    )
+    return CITY_SELECT_LOAD
+
+
+async def handle_city_select_load(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Обробка вибору населеного пункту завантаження"""
+    text = (update.message.text or "").strip()
+    
+    if text == "⬅️ Назад":
+        index = context.user_data.get("question_index", 0)
+        if index > 0:
+            context.user_data["question_index"] = index - 1
+        return await ask_question(update, context)
+    
+    if text == "✍️ Ввести вручну":
+        await update.message.reply_text(
+            "Введіть назву населеного пункту вручну:",
+            reply_markup=ReplyKeyboardRemove()
+        )
+        return CITY_SEARCH_LOAD
+    
+    # Зберегти вибране місто
+    context.user_data["load_city"] = text
+    
+    # Видалити повідомлення та перейти до наступного питання
+    try:
+        await update.message.delete()
+        last_msg_id = context.user_data.get("last_question_message_id")
+        if last_msg_id:
+            await context.bot.delete_message(
+                chat_id=update.effective_chat.id,
+                message_id=last_msg_id
+            )
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            text=f"Населений пункт завантаження: ✅ {text}"
+        )
+    except:
+        pass
+    
+    if context.user_data.get("editing_mode"):
+        context.user_data.pop("editing_mode", None)
+        context.user_data["question_index"] = len(QUESTIONS)
+        await update.message.reply_text(
+            f"✅ Змінено на '{text}'",
+            reply_markup=ReplyKeyboardRemove(),
+        )
+        return await ask_question(update, context)
+    
+    index = context.user_data.get("question_index", 0)
+    context.user_data["question_index"] = index + 1
+    return await ask_question(update, context)
+
+
+async def handle_city_search_unload(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Обробка введення пошукового запиту для населеного пункту розвантаження"""
+    text = (update.message.text or "").strip()
+    
+    if text == "⬅️ Назад":
+        index = context.user_data.get("question_index", 0)
+        if index > 0:
+            context.user_data["question_index"] = index - 1
+        return await ask_question(update, context)
+    
+    # Пошук міст
+    cities = await search_cities_novaposhta(text)
+    
+    if not cities:
+        await update.message.reply_text(
+            "🔍 Нічого не знайдено. Спробуйте інший запит або введіть повну назву вручну."
+        )
+        return CITY_SEARCH_UNLOAD
+    
+    # Показати варіанти
+    buttons = [[KeyboardButton(text=city["display"])] for city in cities]
+    buttons.append([KeyboardButton(text="✍️ Ввести вручну")])
+    
+    index = context.user_data.get("question_index", 0)
+    if index > 0:
+        buttons.append([KeyboardButton(text="⬅️ Назад")])
+    
+    keyboard = ReplyKeyboardMarkup(buttons, resize_keyboard=True, one_time_keyboard=True)
+    
+    # Зберегти результати пошуку для подальшого вибору
+    context.user_data["city_search_results"] = cities
+    
+    await update.message.reply_text(
+        "Оберіть населений пункт зі списку або введіть вручну:",
+        reply_markup=keyboard
+    )
+    return CITY_SELECT_UNLOAD
+
+
+async def handle_city_select_unload(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Обробка вибору населеного пункту розвантаження"""
+    text = (update.message.text or "").strip()
+    
+    if text == "⬅️ Назад":
+        index = context.user_data.get("question_index", 0)
+        if index > 0:
+            context.user_data["question_index"] = index - 1
+        return await ask_question(update, context)
+    
+    if text == "✍️ Ввести вручну":
+        await update.message.reply_text(
+            "Введіть назву населеного пункту вручну:",
+            reply_markup=ReplyKeyboardRemove()
+        )
+        return CITY_SEARCH_UNLOAD
+    
+    # Зберегти вибране місто
+    context.user_data["unload_city"] = text
+    
+    # Видалити повідомлення та перейти до наступного питання
+    try:
+        await update.message.delete()
+        last_msg_id = context.user_data.get("last_question_message_id")
+        if last_msg_id:
+            await context.bot.delete_message(
+                chat_id=update.effective_chat.id,
+                message_id=last_msg_id
+            )
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            text=f"Населений пункт розвантаження: ✅ {text}"
+        )
+    except:
+        pass
+    
+    if context.user_data.get("editing_mode"):
+        context.user_data.pop("editing_mode", None)
+        context.user_data["question_index"] = len(QUESTIONS)
+        await update.message.reply_text(
+            f"✅ Змінено на '{text}'",
+            reply_markup=ReplyKeyboardRemove(),
+        )
+        return await ask_question(update, context)
+    
+    index = context.user_data.get("question_index", 0)
+    context.user_data["question_index"] = index + 1
+    return await ask_question(update, context)
+
+
 async def show_edit_fields(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Показує список полів для редагування"""
     buttons = []
@@ -1370,6 +1639,10 @@ def build_app() -> Application:
             DATE_TYPE: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_date_type)],
             DATE_CALENDAR: [CallbackQueryHandler(handle_calendar)],
             DATE_PERIOD_END: [CallbackQueryHandler(handle_period_end)],
+            CITY_SEARCH_LOAD: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_city_search_load)],
+            CITY_SELECT_LOAD: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_city_select_load)],
+            CITY_SEARCH_UNLOAD: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_city_search_unload)],
+            CITY_SELECT_UNLOAD: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_city_select_unload)],
             CONFIRM: [MessageHandler(filters.TEXT & ~filters.COMMAND, confirm)],
             EDIT: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_edit_choice)],
             SAVE_TEMPLATE_CONFIRM: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_save_template_response)],
