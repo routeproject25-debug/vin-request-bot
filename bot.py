@@ -2,6 +2,7 @@ import os
 import logging
 import calendar
 import aiohttp
+import pytz
 from typing import Dict, Any, List, Optional, Tuple
 from datetime import datetime, date
 from telegram_bot_calendar import DetailedTelegramCalendar
@@ -233,7 +234,9 @@ def _should_skip_question(question_key: str, data: Dict[str, Any]) -> bool:
         # Поля які пропускати в швидкій режимі
         quick_mode_skip = {
             "size_type",           # Габарит/негабарит
+            "load_place",         # Склад завантаження
             "load_method",        # Спосіб завантаження
+            "unload_place",       # Склад розвантаження
             "unload_method",      # Спосіб розвантаження
             "load_contact",       # Контакт на завантаженні
             "unload_contact",     # Контакт на розвантаженні
