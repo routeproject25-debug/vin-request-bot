@@ -896,7 +896,40 @@ async def handle_answer(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
                 )
             except:
                 pass
-            # Надіслати нове повідомлення з відповіддю
+        
+        # Спеціальна обробка для big_bag_weight: об'єднати з size_type
+        if question["key"] == "big_bag_weight":
+            # Видалити попереднє повідомлення про size_type
+            size_type_msg_id = context.user_data.get("size_type_msg_id")
+            if size_type_msg_id:
+                try:
+                    await context.bot.delete_message(
+                        chat_id=update.effective_chat.id,
+                        message_id=size_type_msg_id
+                    )
+                except:
+                    pass
+            
+            # Надіслати об'єднане повідомлення
+            size_type = context.user_data.get("size_type", "—")
+            big_bag_weight = context.user_data.get("big_bag_weight", "—")
+            combined_text = f"Габарит / негабарит: ✅ {size_type} - {big_bag_weight} кг/шт"
+            msg = await context.bot.send_message(
+                chat_id=update.effective_chat.id,
+                text=combined_text
+            )
+            # Зберегти цей message_id щоб видалити при редагуванні
+            context.user_data["big_bag_combined_msg_id"] = msg.message_id
+        elif question["key"] == "size_type" and context.user_data.get("size_type") == "Біг-бег":
+            # Для Біг-бегу зберегти message_id щоб видалити його коли отримаємо big_bag_weight
+            answer_value = context.user_data.get(question["key"], "—")
+            msg = await context.bot.send_message(
+                chat_id=update.effective_chat.id,
+                text=f"{question['prompt']} ✅ {answer_value}"
+            )
+            context.user_data["size_type_msg_id"] = msg.message_id
+        else:
+            # Звичайна обробка для інших питань
             answer_value = context.user_data.get(question["key"], "—")
             await context.bot.send_message(
                 chat_id=update.effective_chat.id,
