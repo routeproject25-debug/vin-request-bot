@@ -230,8 +230,8 @@ def export_to_sheets(data: Dict[str, Any]) -> bool:
                 continue
             row[idx] = value
         
-        # Вставити рядок одразу після заголовків (рядок 2)
-        worksheet.insert_row(row, index=2, value_input_option='USER_ENTERED')
+        # Додати рядок в перший вільний рядок (найновіші внизу)
+        worksheet.append_row(row, value_input_option='USER_ENTERED')
         
         logger.info(f"Successfully exported request to Google Sheets (spreadsheet: {spreadsheet_id})")
         return True
