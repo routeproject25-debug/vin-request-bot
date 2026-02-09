@@ -1651,7 +1651,20 @@ async def handle_save_template_name(update: Update, context: ContextTypes.DEFAUL
         "quick_mode",
         "date_type",
     }
-    template_data = {k: v for k, v in context.user_data.items() if k in allowed_keys}
+    
+    # Конвертувати всі дані в JSON-сумісний формат
+    template_data = {}
+    for k, v in context.user_data.items():
+        if k in allowed_keys:
+            # Конвертувати в строку якщо це не базовий тип
+            if isinstance(v, (str, int, float, bool, type(None))):
+                template_data[k] = v
+            elif isinstance(v, list):
+                template_data[k] = [str(item) for item in v]
+            elif isinstance(v, dict):
+                template_data[k] = {str(key): str(val) for key, val in v.items()}
+            else:
+                template_data[k] = str(v)
     
     success = db.save_template(user_id, template_name, template_data)
     

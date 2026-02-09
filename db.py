@@ -92,7 +92,10 @@ def save_template(user_id: int, template_name: str, template_data: Dict[str, Any
         logger.info(f"Template '{template_name}' saved for user {user_id}")
         return True
     except Exception as e:
-        logger.error(f"Error saving template: {e}")
+        logger.error(f"Error saving template '{template_name}' for user {user_id}: {e}")
+        logger.error(f"Template data: {template_data}")
+        import traceback
+        logger.error(traceback.format_exc())
         return False
 
 
