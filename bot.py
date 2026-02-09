@@ -92,8 +92,15 @@ QUESTIONS: List[Dict[str, Any]] = [
         "options": ["Габарит", "Негабарит", "Насип", "Рідкі", "Біг-бег"],
     },
     {
+        "key": "big_bag_weight",
+        "label": "Вага 1 біг-бегу",
+        "prompt": "Вага 1 біг-бегу в кг:",
+        "options": None,
+        "only_for": "Біг-бег",
+    },
+    {
         "key": "volume",
-        "label": "Вага/Кількість",
+        "label": "Кількість / Обсяг",
         "prompt": "Обсяг (залежить від типу):",
         "options": None,
         "conditional": True,
@@ -166,7 +173,7 @@ QUESTIONS: List[Dict[str, Any]] = [
 def _get_volume_prompt(size_type: str) -> str:
     """Отримати правильний prompt для питання про вагу/обсяг залежно від типу розміру"""
     if size_type == "Біг-бег":
-        return "Вага біг-бегу в кг:"
+        return "Кількість біг-бегів:"
     elif size_type in ["Насип", "Рідкі"]:
         return "Кількість тон:"
     else:  # Габарит, Негабарит
@@ -178,7 +185,7 @@ def _format_volume_with_unit(size_type: str, volume: str) -> str:
     if not volume:
         return volume
     if size_type == "Біг-бег":
-        return f"{volume} кг"
+        return f"{volume} шт"
     elif size_type in ["Насип", "Рідкі"]:
         return f"{volume} т"
     else:  # Габарит, Негабарит
@@ -252,11 +259,16 @@ def _normalize_cargo_type(value: Optional[str]) -> Optional[str]:
 
 
 def _should_skip_question(question_key: str, data: Dict[str, Any]) -> bool:
+    # Пропускати big_bag_weight для всіх розмірів окрім Біг-бегу
+    if question_key == "big_bag_weight" and data.get("size_type") != "Біг-бег":
+        return True
+    
     # У швидкій заявці пропускати деякі поля
     if data.get("quick_mode"):
         # Поля які пропускати в швидкій режимі
         quick_mode_skip = {
             "size_type",           # Габарит/негабарит
+            "big_bag_weight",      # Вага 1 біг-бегу
             "load_place",         # Склад завантаження
             "load_method",        # Спосіб завантаження
             "unload_place",       # Склад розвантаження
@@ -356,11 +368,18 @@ def _format_application(data: Dict[str, Any]) -> str:
     date_str = now.strftime("%d.%m.%Y")
     time_str = now.strftime("%H:%M")
     
+    # Форматувати size_type з big_bag_weight для Біг-бегу
+    size_type = val('size_type')
+    if size_type == "Біг-бег":
+        big_bag_weight = val('big_bag_weight')
+        if big_bag_weight != "—":
+            size_type = f"Біг-бег - {big_bag_weight} кг/шт"
+    
     # Форматувати обсяг/вагу з правильною одиницею
     volume_value = val('volume')
-    size_type = val('size_type')
+    size_type_for_unit = data.get('size_type', '')
     if volume_value != "—":
-        volume_value = _format_volume_with_unit(size_type, volume_value)
+        volume_value = _format_volume_with_unit(size_type_for_unit, volume_value)
 
     return (
             f"Дата: {date_str}\n"
@@ -374,7 +393,7 @@ def _format_application(data: Dict[str, Any]) -> str:
         "Параметри перевезення:\n"
         f"Підприємство: {val('company')}\n"
         f"Вид вантажу: {val('cargo_type')}\n"
-        f"Габарит / негабарит: {val('size_type')}\n"
+        f"Габарит / негабарит: {size_type}\n"
         f"Обсяг: {volume_value}\n"
         f"Примітки: {val('notes')}\n\n"
         "Маршрут:\n"
