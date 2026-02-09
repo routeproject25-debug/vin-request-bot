@@ -192,30 +192,43 @@ def export_to_sheets(data: Dict[str, Any]) -> bool:
                 # Одна дата - це дата початку
                 date_start = date_period
         
-        # Підготувати рядок даних
-        row = [
-            date_str,                                    # 1. Дата
-            time_str,                                    # 2. Час
-            data.get("initiator", "—"),                  # 3. Ініціатор заявки
-            data.get("company", "—"),                    # 4. Підприємство
-            data.get("vehicle_type", "—"),               # 5. Тип авто
-            data.get("cargo_type", "—"),                 # 6. Вид вантажу
-            size_type_display,                           # 7. Габарит / негабарит
-            volume_display,                              # 8. Обсяг
-            data.get("notes", "—"),                      # 9. Примітка
-            date_start,                                  # 10. Дата початку
-            date_end,                                    # 11. Дата кінця
-            data.get("load_city", "—"),                  # 12. Населений пункт завантаження
-            data.get("load_place", "—"),                 # 13. Склад завантаження
-            data.get("load_method", "—"),                # 14. Спосіб завантаження
-            load_name,                                   # 15. Контакт на завантаженні
-            load_phone,                                  # 16. Номер телефона на завантаженні
-            data.get("unload_city", "—"),                # 17. Населений пункт розвантаження
-            data.get("unload_place", "—"),               # 18. Склад розвантаження
-            data.get("unload_method", "—"),              # 19. Спосіб розвантаження
-            unload_name,                                 # 20. Контакт на розвантаженні
-            unload_phone,                                # 21. Номер телефона на розвантаженні
-        ]
+        # Підготувати рядок даних по заголовках таблиці
+        headers = worksheet.row_values(1)
+        if not headers:
+            logger.error(f"Sheet '{worksheet_name}' has empty header row")
+            return False
+        header_map = {h.strip(): idx for idx, h in enumerate(headers) if h and h.strip()}
+        row = ["" for _ in headers]
+        values_by_header = {
+            "Дата": date_str,
+            "Час": time_str,
+            "Ініціатор заявки": data.get("initiator", "—"),
+            "Підприємство": data.get("company", "—"),
+            "Тип авто": data.get("vehicle_type", "—"),
+            "Вид вантажу": data.get("cargo_type", "—"),
+            "Габарит / негабарит": size_type_display,
+            "Обсяг": volume_display,
+            "Примітка": data.get("notes", "—"),
+            "Дата початку": date_start,
+            "Дата кінця": date_end,
+            "Населений пункт завантаження": data.get("load_city", "—"),
+            "Склад завантаження": data.get("load_place", "—"),
+            "Спосіб завантаження": data.get("load_method", "—"),
+            "Контакт на завантаженні": load_name,
+            "Номер телефона на завантаженні": load_phone,
+            "Населений пункт розвантаження": data.get("unload_city", "—"),
+            "Склад розвантаження": data.get("unload_place", "—"),
+            "Спосіб розвантаження": data.get("unload_method", "—"),
+            "Контакт на розвантаженні": unload_name,
+            "Номер телефона на розвантаженні": unload_phone,
+        }
+
+        for header, value in values_by_header.items():
+            idx = header_map.get(header)
+            if idx is None:
+                logger.warning(f"Header '{header}' not found in sheet '{worksheet_name}'")
+                continue
+            row[idx] = value
         
         # Додати рядок у таблицю
         worksheet.append_row(row, value_input_option='USER_ENTERED')

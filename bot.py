@@ -1,4 +1,5 @@
 import os
+import re
 import logging
 import calendar
 import aiohttp
@@ -32,6 +33,30 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.INFO,
 )
+
+
+class _RedactBotTokenFilter(logging.Filter):
+    """Redact Telegram bot tokens from log messages."""
+
+    _token_pattern = re.compile(r"bot\d+:[A-Za-z0-9_-]+")
+    _db_url_pattern = re.compile(r"postgres(?:ql)?://[^\s]+", re.IGNORECASE)
+    _creds_pattern = re.compile(r"\"private_key\"\s*:\s*\".*?\"", re.DOTALL)
+    _creds_json_pattern = re.compile(r"GOOGLE_CREDENTIALS_JSON[^\s]*", re.IGNORECASE)
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if isinstance(record.msg, str):
+            msg = record.msg
+            msg = self._token_pattern.sub("bot<redacted>", msg)
+            msg = self._db_url_pattern.sub("postgres://<redacted>", msg)
+            msg = self._creds_pattern.sub('"private_key":"<redacted>"', msg)
+            msg = self._creds_json_pattern.sub("GOOGLE_CREDENTIALS_JSON=<redacted>", msg)
+            record.msg = msg
+        return True
+
+
+logging.getLogger().addFilter(_RedactBotTokenFilter())
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 START, DEPARTMENT, QUESTION, CUSTOM_INPUT, CROP_TYPE, CONFIRM, EDIT, DATE_TYPE, DATE_CALENDAR, DATE_PERIOD_END, LOAD_TEMPLATE, TEMPLATE_SELECT, SAVE_TEMPLATE_NAME, SAVE_TEMPLATE_CONFIRM, DELETE_TEMPLATE_CONFIRM, CITY_SEARCH_LOAD, CITY_SELECT_LOAD, CITY_SEARCH_UNLOAD, CITY_SELECT_UNLOAD = range(19)
 

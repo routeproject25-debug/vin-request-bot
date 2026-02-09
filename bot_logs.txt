@@ -1,0 +1,8 @@
+Traceback (most recent call last):
+  File "D:\┴юЄ фы  ЇюЁьєтрээ  чр тюъ\bot.py", line 1801, in <module>
+    main()
+  File "D:\┴юЄ фы  ЇюЁьєтрээ  чр тюъ\bot.py", line 1796, in main
+    app = build_app()
+  File "D:\┴юЄ фы  ЇюЁьєтрээ  чр тюъ\bot.py", line 1754, in build_app
+    raise RuntimeError("TELEGRAM_BOT_TOKEN is not set")
+RuntimeError: TELEGRAM_BOT_TOKEN is not set
