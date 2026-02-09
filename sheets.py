@@ -169,6 +169,25 @@ def export_to_sheets(data: Dict[str, Any]) -> bool:
         else:
             volume_display = "—"
         
+        # Обробити дату/період
+        date_period = data.get("date_period", "—")
+        date_start = "—"
+        date_end = "—"
+        
+        if date_period and date_period != "—":
+            # Перевірити, чи це період (містить " - ")
+            if " - " in date_period:
+                # Розділити на дату початку і кінця
+                parts = date_period.split(" - ")
+                if len(parts) == 2:
+                    date_start = parts[0].strip()
+                    date_end = parts[1].strip()
+                else:
+                    date_start = date_period
+            else:
+                # Одна дата - це дата початку
+                date_start = date_period
+        
         # Підготувати рядок даних
         row = [
             date_str,                                    # 1. Дата
@@ -179,8 +198,8 @@ def export_to_sheets(data: Dict[str, Any]) -> bool:
             size_type_display,                           # 6. Габарит / негабарит
             volume_display,                              # 7. Обсяг
             data.get("notes", "—"),                      # 8. Примітка
-            data.get("date_period", "—"),                # 9. Дата початку (або період)
-            "—",                                         # 10. Дата кінця (якщо є період)
+            date_start,                                  # 9. Дата початку
+            date_end,                                    # 10. Дата кінця
             data.get("load_city", "—"),                  # 11. Населений пункт завантаження
             data.get("load_place", "—"),                 # 12. Склад завантаження
             data.get("load_method", "—"),                # 13. Спосіб завантаження
