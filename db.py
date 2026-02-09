@@ -36,7 +36,7 @@ def init_db():
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS templates (
                 id SERIAL PRIMARY KEY,
-                user_id INTEGER NOT NULL,
+                user_id BIGINT NOT NULL,
                 template_name TEXT NOT NULL,
                 template_data JSONB NOT NULL,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -47,12 +47,31 @@ def init_db():
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS contacts (
                 id SERIAL PRIMARY KEY,
-                user_id INTEGER NOT NULL,
+                user_id BIGINT NOT NULL,
                 contact_type TEXT NOT NULL,
                 contact_value TEXT NOT NULL,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
+        
+        # Міграція: оновити тип user_id з INTEGER на BIGINT (якщо таблиці вже існують)
+        try:
+            cursor.execute("""
+                ALTER TABLE templates 
+                ALTER COLUMN user_id TYPE BIGINT
+            """)
+            logger.info("Migrated templates.user_id to BIGINT")
+        except Exception as e:
+            logger.debug(f"Templates.user_id migration skipped: {e}")
+        
+        try:
+            cursor.execute("""
+                ALTER TABLE contacts 
+                ALTER COLUMN user_id TYPE BIGINT
+            """)
+            logger.info("Migrated contacts.user_id to BIGINT")
+        except Exception as e:
+            logger.debug(f"Contacts.user_id migration skipped: {e}")
         
         # Індекси для швидкості
         cursor.execute("""
