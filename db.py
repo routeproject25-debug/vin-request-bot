@@ -75,8 +75,17 @@ def init_db():
 def save_template(user_id: int, template_name: str, template_data: Dict[str, Any]) -> bool:
     """Зберегти шаблон заявки"""
     try:
+        # Перевірити зв'язок
         conn = get_connection()
+        if not conn:
+            logger.error("Failed to establish database connection")
+            return False
+        
         cursor = conn.cursor()
+        
+        # Логувати що збігаємо
+        logger.info(f"Attempting to save template '{template_name}' for user {user_id}")
+        logger.info(f"Template data keys: {list(template_data.keys())}")
         
         cursor.execute(
             """
@@ -89,13 +98,15 @@ def save_template(user_id: int, template_name: str, template_data: Dict[str, Any
         conn.commit()
         cursor.close()
         conn.close()
-        logger.info(f"Template '{template_name}' saved for user {user_id}")
+        logger.info(f"✅ Template '{template_name}' saved successfully for user {user_id}")
         return True
     except Exception as e:
-        logger.error(f"Error saving template '{template_name}' for user {user_id}: {e}")
+        logger.error(f"❌ Error saving template '{template_name}' for user {user_id}")
+        logger.error(f"Exception type: {type(e).__name__}")
+        logger.error(f"Exception message: {e}")
         logger.error(f"Template data: {template_data}")
         import traceback
-        logger.error(traceback.format_exc())
+        logger.error(f"Full traceback:\n{traceback.format_exc()}")
         return False
 
 

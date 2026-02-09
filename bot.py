@@ -1652,6 +1652,10 @@ async def handle_save_template_name(update: Update, context: ContextTypes.DEFAUL
         "date_type",
     }
     
+    logging.info(f"Starting template save process for user {user_id}, template name: '{template_name}'")
+    logging.info(f"Available context.user_data keys: {list(context.user_data.keys())}")
+    logging.info(f"Allowed keys: {sorted(allowed_keys)}")
+    
     # Конвертувати всі дані в JSON-сумісний формат
     template_data = {}
     for k, v in context.user_data.items():
@@ -1667,6 +1671,9 @@ async def handle_save_template_name(update: Update, context: ContextTypes.DEFAUL
                 template_data[k] = {str(key): str(val) if val is not None else None for key, val in v.items()}
             else:
                 template_data[k] = str(v)
+    
+    logging.info(f"Prepared template_data with {len(template_data)} keys: {list(template_data.keys())}")
+    logging.debug(f"Template data content: {template_data}")
     
     success = db.save_template(user_id, template_name, template_data)
     
