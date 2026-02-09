@@ -4,3 +4,5 @@ Babel==2.14.0
 psycopg2-binary==2.9.9
 aiohttp==3.9.3
 pytz==2024.1
+gspread==6.0.0
+google-auth==2.27.0

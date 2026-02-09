@@ -7,6 +7,7 @@ from typing import Dict, Any, List, Optional, Tuple
 from datetime import datetime, date
 from telegram_bot_calendar import DetailedTelegramCalendar
 import db
+import sheets
 
 from telegram import (
     Update,
@@ -1539,6 +1540,12 @@ async def confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
             message_thread_id=thread_id,
         )
         
+        # Експорт у Google Sheets
+        try:
+            sheets.export_to_sheets(context.user_data)
+        except Exception as e:
+            logging.error(f"Failed to export to Google Sheets: {e}")
+        
         # Повернення до стартового меню
         keyboard = ReplyKeyboardMarkup(
             [[KeyboardButton(text="📝 Нова заявка")]],
@@ -1580,6 +1587,12 @@ async def confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
             chat_id=chat_id,
             text=notification,
         )
+        
+        # Експорт у Google Sheets
+        try:
+            sheets.export_to_sheets(context.user_data)
+        except Exception as e:
+            logging.error(f"Failed to export to Google Sheets: {e}")
         
         # Запропонувати зберегти як шаблон (для всіх типів заявок)
         keyboard = ReplyKeyboardMarkup(
