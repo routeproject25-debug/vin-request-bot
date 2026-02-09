@@ -268,8 +268,6 @@ def _should_skip_question(question_key: str, data: Dict[str, Any]) -> bool:
     if data.get("quick_mode"):
         # Поля які пропускати в швидкій режимі
         quick_mode_skip = {
-            "size_type",           # Габарит/негабарит
-            "big_bag_weight",      # Вага 1 біг-бегу
             "load_place",         # Склад завантаження
             "load_method",        # Спосіб завантаження
             "unload_place",       # Склад розвантаження
@@ -279,6 +277,7 @@ def _should_skip_question(question_key: str, data: Dict[str, Any]) -> bool:
             "notes",              # Примітки
             "company",            # Підприємство (встановлюється автоматично)
         }
+        # size_type і big_bag_weight НЕ пропускаються - це важлива інформація
         if question_key in quick_mode_skip:
             return True
     
