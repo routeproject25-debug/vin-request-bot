@@ -89,13 +89,14 @@ QUESTIONS: List[Dict[str, Any]] = [
         "key": "size_type",
         "label": "Габарит / негабарит",
         "prompt": "Габарит / негабарит:",
-        "options": ["Габарит", "Негабарит", "Насип", "Рідкі"],
+        "options": ["Габарит", "Негабарит", "Насип", "Рідкі", "Біг-бег"],
     },
     {
         "key": "volume",
-        "label": "Обсяг",
-        "prompt": "Обсяг (наприклад: 22 т або 10 біг-бегів):",
+        "label": "Вага/Кількість",
+        "prompt": "Обсяг (залежить від типу):",
         "options": None,
+        "conditional": True,
     },
     {
         "key": "notes",
@@ -160,6 +161,28 @@ QUESTIONS: List[Dict[str, Any]] = [
         "options": None,
     },
 ]
+
+
+def _get_volume_prompt(size_type: str) -> str:
+    """Отримати правильний prompt для питання про вагу/обсяг залежно від типу розміру"""
+    if size_type == "Біг-бег":
+        return "Вага біг-бегу в кг:"
+    elif size_type in ["Насип", "Рідкі"]:
+        return "Кількість тон:"
+    else:  # Габарит, Негабарит
+        return "Вага в тонах:"
+
+
+def _format_volume_with_unit(size_type: str, volume: str) -> str:
+    """Форматувати відповідь вага/обсяг з правильною одиницею"""
+    if not volume:
+        return volume
+    if size_type == "Біг-бег":
+        return f"{volume} кг"
+    elif size_type in ["Насип", "Рідкі"]:
+        return f"{volume} т"
+    else:  # Габарит, Негабарит
+        return f"{volume} т"
 
 
 async def search_cities_novaposhta(query: str) -> List[Dict[str, str]]:
@@ -332,6 +355,12 @@ def _format_application(data: Dict[str, Any]) -> str:
     now = datetime.now(kyiv_tz)
     date_str = now.strftime("%d.%m.%Y")
     time_str = now.strftime("%H:%M")
+    
+    # Форматувати обсяг/вагу з правильною одиницею
+    volume_value = val('volume')
+    size_type = val('size_type')
+    if volume_value != "—":
+        volume_value = _format_volume_with_unit(size_type, volume_value)
 
     return (
             f"Дата: {date_str}\n"
@@ -346,7 +375,7 @@ def _format_application(data: Dict[str, Any]) -> str:
         f"Підприємство: {val('company')}\n"
         f"Вид вантажу: {val('cargo_type')}\n"
         f"Габарит / негабарит: {val('size_type')}\n"
-        f"Обсяг: {val('volume')}\n"
+        f"Обсяг: {volume_value}\n"
         f"Примітки: {val('notes')}\n\n"
         "Маршрут:\n"
         f"Дата / період перевезення: {val('date_period')}\n\n"
@@ -739,9 +768,16 @@ async def ask_question(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     
     show_back = index > 0
     keyboard = _build_reply_keyboard(question.get("options"), show_back=show_back)
+    
+    # Для умовного питання про volume - змінити prompt залежно від size_type
+    prompt_text = question['prompt']
+    if question["key"] == "volume" and question.get("conditional"):
+        size_type = context.user_data.get("size_type", "")
+        prompt_text = _get_volume_prompt(size_type)
+    
     # Прогрес-бар: показувати скільки питань вміще
     progress = f"({index + 1}/{len(QUESTIONS)})"
-    prompt_with_progress = f"{question['prompt']} {progress}"
+    prompt_with_progress = f"{prompt_text} {progress}"
     # Зберегти message_id щоб потім редагувати
     bot_message = await update.message.reply_text(prompt_with_progress, reply_markup=keyboard)
     context.user_data["last_question_message_id"] = bot_message.message_id

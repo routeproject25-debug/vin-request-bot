@@ -6,4 +6,5 @@ __pycache__/
 dist/
 build/
 requests.db
-*.db
+*.db*-d63178aba048.json
+*credentials*.json
