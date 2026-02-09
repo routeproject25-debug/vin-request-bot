@@ -1657,12 +1657,14 @@ async def handle_save_template_name(update: Update, context: ContextTypes.DEFAUL
     for k, v in context.user_data.items():
         if k in allowed_keys:
             # Конвертувати в строку якщо це не базовий тип
-            if isinstance(v, (str, int, float, bool, type(None))):
+            if v is None:
+                template_data[k] = None
+            elif isinstance(v, (str, int, float, bool)):
                 template_data[k] = v
             elif isinstance(v, list):
-                template_data[k] = [str(item) for item in v]
+                template_data[k] = [str(item) if item is not None else None for item in v]
             elif isinstance(v, dict):
-                template_data[k] = {str(key): str(val) for key, val in v.items()}
+                template_data[k] = {str(key): str(val) if val is not None else None for key, val in v.items()}
             else:
                 template_data[k] = str(v)
     
@@ -1679,9 +1681,12 @@ async def handle_save_template_name(update: Update, context: ContextTypes.DEFAUL
         )
     else:
         await update.message.reply_text(
-            "❌ Помилка при збереженні шаблону. Спробуйте ще раз.",
+            "❌ Помилка при збереженні шаблону. Перевірте логи бота для деталей.",
             reply_markup=ReplyKeyboardRemove()
         )
+        logging.error(f"Failed to save template. User data keys: {list(context.user_data.keys())}")
+        logging.error(f"Allowed keys: {allowed_keys}")
+        logging.error(f"Template data to save: {template_data}")
         return await show_start_menu(update, context)
     
     context.user_data.clear()
