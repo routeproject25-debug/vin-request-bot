@@ -77,7 +77,7 @@ def get_sheets_client():
             return client
         
         # Якщо немає в ENV - спробувати прочитати з файлу (локально)
-        creds_file = os.getenv("GOOGLE_CREDENTIALS_FILE", "telegram-bot-requests-486908-d63178aba048.json")
+        creds_file = os.getenv("GOOGLE_CREDENTIALS_FILE", "google-credentials.json")
         if os.path.exists(creds_file):
             creds = Credentials.from_service_account_file(creds_file, scopes=SCOPES)
             client = gspread.authorize(creds)
