@@ -120,7 +120,7 @@ QUESTIONS: List[Dict[str, Any]] = [
     {
         "key": "big_bag_weight",
         "label": "Вага 1 біг-бегу",
-        "prompt": "Вага 1 біг-бегу в кг:",
+        "prompt": "Вага 1 біг-бегу в кг (тільки число):",
         "options": None,
         "only_for": "Біг-бег",
     },
@@ -199,11 +199,11 @@ QUESTIONS: List[Dict[str, Any]] = [
 def _get_volume_prompt(size_type: str) -> str:
     """Отримати правильний prompt для питання про вагу/обсяг залежно від типу розміру"""
     if size_type == "Біг-бег":
-        return "Кількість біг-бегів:"
+        return "Кількість біг-бегів (тільки число):"
     elif size_type in ["Насип", "Рідкі"]:
-        return "Кількість тон:"
+        return "Кількість тон (тільки число):"
     else:  # Габарит, Негабарит
-        return "Вага в тонах:"
+        return "Вага в тонах (тільки число):"
 
 
 def _format_volume_with_unit(size_type: str, volume: str) -> str:
@@ -903,7 +903,22 @@ async def handle_answer(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
         else:
             context.user_data[question["key"]] = text
     else:
-        if question["key"] == "notes" and text.lower() == "пропустити":
+        # Валідація для volume та big_bag_weight - тільки числа
+        if question["key"] in ["volume", "big_bag_weight"]:
+            # Видалити всі пробіли та замінити кому на крапку
+            clean_text = text.replace(" ", "").replace(",", ".")
+            # Перевірити чи це число
+            try:
+                float(clean_text)
+                context.user_data[question["key"]] = clean_text
+            except ValueError:
+                # Не число - показати помилку
+                await update.message.reply_text(
+                    f"❌ Помилка: введіть тільки число (наприклад: 25 або 25.5)\n\n{_get_volume_prompt(context.user_data.get('size_type', '')) if question['key'] == 'volume' else 'Вага 1 біг-бегу в кг (тільки число):'}",
+                    reply_markup=ReplyKeyboardRemove()
+                )
+                return QUESTION
+        elif question["key"] == "notes" and text.lower() == "пропустити":
             context.user_data[question["key"]] = "—"
         else:
             context.user_data[question["key"]] = text
