@@ -9,6 +9,7 @@ from datetime import datetime, date
 from telegram_bot_calendar import DetailedTelegramCalendar
 import db
 import sheets
+from db import save_contacts, get_user_contacts
 
 from telegram import (
     Update,
@@ -813,6 +814,30 @@ async def ask_question(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     show_back = index > 0
     keyboard = _build_reply_keyboard(question.get("options"), show_back=show_back)
     
+    # Для контактів - показати історію збережених
+    if question["key"] in ["load_contact", "unload_contact"]:
+        user_id = update.effective_user.id
+        saved_contacts = get_user_contacts(user_id)
+        
+        buttons = []
+        if saved_contacts:
+            # Показати останні 5 контактів
+            for contact in saved_contacts[:5]:
+                buttons.append([KeyboardButton(text=contact["value"])])
+        
+        buttons.append([KeyboardButton(text="✍️ Ввести новий контакт")])
+        if question.get("options") and "Пропустити" in question["options"]:
+            buttons.append([KeyboardButton(text="Пропустити")])
+        if index > 0:
+            buttons.append([KeyboardButton(text="⬅️ Назад")])
+        
+        keyboard = ReplyKeyboardMarkup(buttons, resize_keyboard=True, one_time_keyboard=True)
+        progress = f"({index + 1}/{len(QUESTIONS)})"
+        prompt_with_progress = f"{question['prompt']} {progress}\n\n💡 Оберіть зі списку або введіть новий:"
+        bot_message = await update.message.reply_text(prompt_with_progress, reply_markup=keyboard)
+        context.user_data["last_question_message_id"] = bot_message.message_id
+        return QUESTION
+    
     # Для умовного питання про volume - змінити prompt залежно від size_type
     prompt_text = question['prompt']
     if question["key"] == "volume" and question.get("conditional"):
@@ -832,6 +857,16 @@ async def handle_answer(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     text = (update.message.text or "").strip()
     index = context.user_data.get("question_index", 0)
     question = _get_question(index)
+
+    # Обробка "Ввести новий контакт" для контактів
+    if text == "✍️ Ввести новий контакт" and question["key"] in ["load_contact", "unload_contact"]:
+        await update.message.reply_text(
+            "Введіть контакт (ПІБ, телефон):",
+            reply_markup=ReplyKeyboardRemove()
+        )
+        context.user_data["awaiting_new_contact"] = True
+        context.user_data["new_contact_key"] = question["key"]
+        return CUSTOM_INPUT
 
     # Обробка кнопки Назад
     if text == "⬅️ Назад":
@@ -994,6 +1029,45 @@ async def handle_custom_input(update: Update, context: ContextTypes.DEFAULT_TYPE
     text = (update.message.text or "").strip()
     index = context.user_data.get("question_index", 0)
     question = _get_question(index)
+    
+    # Обробка введення нового контакту
+    if context.user_data.get("awaiting_new_contact"):
+        contact_key = context.user_data.get("new_contact_key")
+        context.user_data[contact_key] = text
+        context.user_data.pop("awaiting_new_contact", None)
+        context.user_data.pop("new_contact_key", None)
+        
+        # Визначити label для питання
+        contact_question = next((q for q in QUESTIONS if q["key"] == contact_key), None)
+        display_text = f"{contact_question['prompt']} ✅ {text}" if contact_question else f"Контакт: ✅ {text}"
+        
+        # Видалити повідомлення користувача та попереднє питання бота
+        try:
+            await update.message.delete()
+            last_msg_id = context.user_data.get("last_question_message_id")
+            if last_msg_id:
+                try:
+                    await context.bot.delete_message(
+                        chat_id=update.effective_chat.id,
+                        message_id=last_msg_id
+                    )
+                except:
+                    pass
+            await context.bot.send_message(
+                chat_id=update.effective_chat.id,
+                text=display_text
+            )
+        except Exception as e:
+            logging.error(f"Помилка при обробці нового контакту: {e}")
+        
+        # Якщо редагуємо - повертаємо до підтвердження
+        if context.user_data.get("editing_mode"):
+            context.user_data.pop("editing_mode", None)
+            context.user_data["question_index"] = len(QUESTIONS)
+            return await ask_question(update, context)
+        
+        context.user_data["question_index"] = index + 1
+        return await ask_question(update, context)
     
     # Обробка "Інше" типів
     if context.user_data.get("awaiting_custom_vehicle_type"):
@@ -1585,6 +1659,26 @@ async def confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         except Exception as e:
             logging.error(f"Failed to export to Google Sheets: {e}")
         
+        # Зберегти контакти для автозаповнення
+        try:
+            user_id = update.effective_user.id
+            contacts_to_save = []
+            if context.user_data.get("load_contact") and context.user_data["load_contact"] != "—":
+                contacts_to_save.append({
+                    "type": "load",
+                    "value": context.user_data["load_contact"]
+                })
+            if context.user_data.get("unload_contact") and context.user_data["unload_contact"] != "—":
+                contacts_to_save.append({
+                    "type": "unload",
+                    "value": context.user_data["unload_contact"]
+                })
+            if contacts_to_save:
+                save_contacts(user_id, contacts_to_save)
+                logging.info(f"Saved {len(contacts_to_save)} contacts for user {user_id}")
+        except Exception as e:
+            logging.error(f"Failed to save contacts: {e}")
+        
         # Повернення до стартового меню
         keyboard = ReplyKeyboardMarkup(
             [[KeyboardButton(text="📝 Нова заявка")]],
@@ -1632,6 +1726,26 @@ async def confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
             sheets.export_to_sheets(context.user_data)
         except Exception as e:
             logging.error(f"Failed to export to Google Sheets: {e}")
+        
+        # Зберегти контакти для автозаповнення
+        try:
+            user_id = update.effective_user.id
+            contacts_to_save = []
+            if context.user_data.get("load_contact") and context.user_data["load_contact"] != "—":
+                contacts_to_save.append({
+                    "type": "load",
+                    "value": context.user_data["load_contact"]
+                })
+            if context.user_data.get("unload_contact") and context.user_data["unload_contact"] != "—":
+                contacts_to_save.append({
+                    "type": "unload",
+                    "value": context.user_data["unload_contact"]
+                })
+            if contacts_to_save:
+                save_contacts(user_id, contacts_to_save)
+                logging.info(f"Saved {len(contacts_to_save)} contacts for user {user_id}")
+        except Exception as e:
+            logging.error(f"Failed to save contacts: {e}")
         
         # Запропонувати зберегти як шаблон (для всіх типів заявок)
         keyboard = ReplyKeyboardMarkup(
