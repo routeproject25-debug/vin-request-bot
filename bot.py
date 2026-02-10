@@ -821,9 +821,17 @@ async def ask_question(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
         
         buttons = []
         if saved_contacts:
-            # Показати останні 5 контактів
-            for contact in saved_contacts[:5]:
-                buttons.append([KeyboardButton(text=contact["value"])])
+            # Показати останні 5 унікальних контактів
+            seen_values = set()
+            unique_contacts = []
+            for contact in saved_contacts:
+                value = contact.get("value", "").strip()
+                if not value or value in seen_values:
+                    continue
+                seen_values.add(value)
+                unique_contacts.append(value)
+            for value in unique_contacts[:5]:
+                buttons.append([KeyboardButton(text=value)])
         
         buttons.append([KeyboardButton(text="✍️ Ввести новий контакт")])
         if question.get("options") and "Пропустити" in question["options"]:
@@ -1663,15 +1671,17 @@ async def confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         try:
             user_id = update.effective_user.id
             contacts_to_save = []
-            if context.user_data.get("load_contact") and context.user_data["load_contact"] != "—":
+            load_contact = (context.user_data.get("load_contact") or "").strip()
+            unload_contact = (context.user_data.get("unload_contact") or "").strip()
+            if load_contact and load_contact != "—":
                 contacts_to_save.append({
                     "type": "load",
-                    "value": context.user_data["load_contact"]
+                    "value": load_contact
                 })
-            if context.user_data.get("unload_contact") and context.user_data["unload_contact"] != "—":
+            if unload_contact and unload_contact != "—" and unload_contact != load_contact:
                 contacts_to_save.append({
                     "type": "unload",
-                    "value": context.user_data["unload_contact"]
+                    "value": unload_contact
                 })
             if contacts_to_save:
                 save_contacts(user_id, contacts_to_save)

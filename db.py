@@ -225,14 +225,19 @@ def save_contacts(user_id: int, contacts: List[Dict[str, str]]) -> bool:
         # Видалити старі контакти
         cursor.execute("DELETE FROM contacts WHERE user_id = %s", (user_id,))
         
-        # Додати нові
+        # Додати нові (без дублікатів)
+        seen_values = set()
         for contact in contacts:
+            value = (contact.get("value", "") or "").strip()
+            if not value or value in seen_values:
+                continue
+            seen_values.add(value)
             cursor.execute(
                 """
                 INSERT INTO contacts (user_id, contact_type, contact_value)
                 VALUES (%s, %s, %s)
                 """,
-                (user_id, contact.get("type", "general"), contact.get("value", ""))
+                (user_id, contact.get("type", "general"), value)
             )
         
         conn.commit()
