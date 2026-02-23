@@ -37,6 +37,7 @@ async def handle_calendar(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         return await ask_question(fake_update, context)
 
     return DATE_CALENDAR
+
 UNLOAD_BLOCK_KEYS = [
     "unload_city",
     "unload_place",
