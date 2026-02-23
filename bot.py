@@ -1,3 +1,42 @@
+async def handle_calendar(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Обробка callback-календаря для вибору дати перевезення"""
+    await update.callback_query.answer()
+    action, payload = _parse_calendar_callback(update.callback_query.data)
+    if action == "NAV" and payload:
+        year_str, month_str = payload.split("-")
+        calendar = _build_month_calendar(int(year_str), int(month_str))
+        await update.callback_query.edit_message_text(
+            "Оберіть дату перевезення:",
+            reply_markup=calendar
+        )
+        return DATE_CALENDAR
+
+    if action == "DATE" and payload:
+        selected_dt = datetime.strptime(payload, "%Y-%m-%d").date()
+        selected_date = selected_dt.strftime("%d.%m.%Y")
+        context.user_data["date"] = selected_date
+        await update.callback_query.edit_message_text(
+            f"Дата перевезення: ✅ {selected_date}"
+        )
+        # Перехід до наступного питання
+        if context.user_data.get("editing_mode"):
+            context.user_data.pop("editing_mode", None)
+            context.user_data["question_index"] = len(QUESTIONS)
+        else:
+            index = context.user_data.get("question_index", 0)
+            context.user_data["question_index"] = index + 1
+
+        class FakeMessage:
+            def __init__(self, chat_id):
+                self.chat_id = chat_id
+                self.message_id = None
+            async def reply_text(self, *args, **kwargs):
+                return await update.callback_query.message.reply_text(*args, **kwargs)
+
+        fake_update = type('obj', (object,), {'message': FakeMessage(update.callback_query.message.chat_id), 'effective_user': update.effective_user})()
+        return await ask_question(fake_update, context)
+
+    return DATE_CALENDAR
 UNLOAD_BLOCK_KEYS = [
     "unload_city",
     "unload_place",
@@ -1210,6 +1249,9 @@ async def handle_date_type(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             reply_markup=calendar
         )
         # --- Відповідь без видалення ---
+        # Визначаємо question для поточного індексу
+        index = context.user_data.get("question_index", 0)
+        question = _get_question(index)
         # Спеціальна обробка для big_bag_weight: об'єднати з size_type
         if question["key"] == "big_bag_weight":
             size_type = context.user_data.get("size_type", "—")
@@ -1250,7 +1292,7 @@ async def handle_date_type(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             
             fake_update = type('obj', (object,), {'message': FakeMessage(update.callback_query.message.chat_id), 'effective_user': update.effective_user})()
             return await ask_question(fake_update, context)
-    return DATE_CALENDAR
+        return DATE_CALENDAR
 
 
 async def handle_period_end(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
