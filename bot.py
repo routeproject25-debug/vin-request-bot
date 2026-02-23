@@ -1,9 +1,3 @@
-UNLOAD_BLOCK_KEYS = [
-    "unload_city",
-    "unload_place",
-    "unload_method",
-    "unload_contact",
-]
 import os
 import re
 import logging
@@ -65,7 +59,7 @@ logging.getLogger().addFilter(_RedactBotTokenFilter())
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
 
-START, DEPARTMENT, QUESTION, CUSTOM_INPUT, CROP_TYPE, CONFIRM, EDIT, DATE_TYPE, DATE_CALENDAR, DATE_PERIOD_END, LOAD_TEMPLATE, TEMPLATE_SELECT, SAVE_TEMPLATE_NAME, SAVE_TEMPLATE_CONFIRM, DELETE_TEMPLATE_CONFIRM, CITY_SEARCH_LOAD, CITY_SELECT_LOAD, CITY_SEARCH_UNLOAD, CITY_SELECT_UNLOAD, MULTI_UNLOAD_CONFIRM = range(20)
+START, DEPARTMENT, QUESTION, CUSTOM_INPUT, CROP_TYPE, CONFIRM, EDIT, DATE_TYPE, DATE_CALENDAR, DATE_PERIOD_END, LOAD_TEMPLATE, TEMPLATE_SELECT, SAVE_TEMPLATE_NAME, SAVE_TEMPLATE_CONFIRM, DELETE_TEMPLATE_CONFIRM, CITY_SEARCH_LOAD, CITY_SELECT_LOAD, CITY_SEARCH_UNLOAD, CITY_SELECT_UNLOAD = range(19)
 
 THREAD_IDS = {
     "Тваринництво": 2,
@@ -175,7 +169,31 @@ QUESTIONS: List[Dict[str, Any]] = [
         "prompt": "Контакт на завантаженні (ПІБ, телефон):",
         "options": ["Пропустити"],
     },
-    # Блок питань по одній точці розвантаження буде додаватись динамічно
+    {
+        "key": "unload_city",
+        "label": "Населений пункт розвантаження",
+        "prompt": "Населений пункт розвантаження:",
+        "options": None,
+        "use_city_search": True,
+    },
+    {
+        "key": "unload_place",
+        "label": "Склад розвантаження (якщо відомо)",
+        "prompt": "Склад розвантаження (якщо відомо):",
+        "options": ["Пропустити"],
+    },
+    {
+        "key": "unload_method",
+        "label": "Спосіб розвантаження",
+        "prompt": "Спосіб розвантаження:",
+        "options": None,
+    },
+    {
+        "key": "unload_contact",
+        "label": "Контакт на розвантаженні (ПІБ, телефон)",
+        "prompt": "Контакт на розвантаженні (ПІБ, телефон):",
+        "options": None,
+    },
 ]
 
 
@@ -930,11 +948,14 @@ async def handle_answer(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     else:
         # Валідація для volume та big_bag_weight - тільки числа
         if question["key"] in ["volume", "big_bag_weight"]:
+            # Видалити всі пробіли та замінити кому на крапку
             clean_text = text.replace(" ", "").replace(",", ".")
+            # Перевірити чи це число
             try:
                 float(clean_text)
                 context.user_data[question["key"]] = clean_text
             except ValueError:
+                # Не число - показати помилку
                 await update.message.reply_text(
                     f"❌ Помилка: введіть тільки число (наприклад: 25 або 25.5)\n\n{_get_volume_prompt(context.user_data.get('size_type', '')) if question['key'] == 'volume' else 'Вага 1 біг-бегу в кг (тільки число):'}",
                     reply_markup=ReplyKeyboardRemove()
@@ -945,49 +966,72 @@ async def handle_answer(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
         else:
             context.user_data[question["key"]] = text
 
-    # --- Цикл збору точок розвантаження ---
-    # Якщо це останнє питання з UNLOAD_BLOCK_KEYS
-    if question["key"] == UNLOAD_BLOCK_KEYS[-1]:
-        # Зібрати поточну точку
-        unload_point = {k: context.user_data.get(k, "—") for k in UNLOAD_BLOCK_KEYS}
-        if "unloads" not in context.user_data:
-            context.user_data["unloads"] = []
-        context.user_data["unloads"].append(unload_point)
-        # Очистити поля для наступної точки
-        for k in UNLOAD_BLOCK_KEYS:
-            context.user_data[k] = None
-        # Запитати чи додати ще одну
-        keyboard = ReplyKeyboardMarkup(
-            [[KeyboardButton(text="Додати точку розвантаження")], [KeyboardButton(text="Завершити точки розвантаження")]],
-            resize_keyboard=True,
-            one_time_keyboard=True,
-        )
-        await update.message.reply_text(
-            "Додати ще одну точку розвантаження?",
-            reply_markup=keyboard
-        )
-        return MULTI_UNLOAD_CONFIRM
+    # Видалити повідомлення користувача та попереднє питання бота
+    try:
+        await update.message.delete()
+        # Видалити попереднє питання бота
+        last_msg_id = context.user_data.get("last_question_message_id")
+        if last_msg_id:
+            try:
+                await context.bot.delete_message(
+                    chat_id=update.effective_chat.id,
+                    message_id=last_msg_id
+                )
+            except:
+                pass
+        
+        # Спеціальна обробка для big_bag_weight: об'єднати з size_type
+        if question["key"] == "big_bag_weight":
+            # Видалити попереднє повідомлення про size_type
+            size_type_msg_id = context.user_data.get("size_type_msg_id")
+            if size_type_msg_id:
+                try:
+                    await context.bot.delete_message(
+                        chat_id=update.effective_chat.id,
+                        message_id=size_type_msg_id
+                    )
+                except:
+                    pass
+            
+            # Надіслати об'єднане повідомлення
+            size_type = context.user_data.get("size_type", "—")
+            big_bag_weight = context.user_data.get("big_bag_weight", "—")
+            combined_text = f"Габарит / негабарит: ✅ {size_type} - {big_bag_weight} кг/шт"
+            msg = await context.bot.send_message(
+                chat_id=update.effective_chat.id,
+                text=combined_text
+            )
+            # Зберегти цей message_id щоб видалити при редагуванні
+            context.user_data["big_bag_combined_msg_id"] = msg.message_id
+        elif question["key"] == "size_type" and context.user_data.get("size_type") == "Біг-бег":
+            # Для Біг-бегу зберегти message_id щоб видалити його коли отримаємо big_bag_weight
+            answer_value = context.user_data.get(question["key"], "—")
+            msg = await context.bot.send_message(
+                chat_id=update.effective_chat.id,
+                text=f"{question['prompt']} ✅ {answer_value}"
+            )
+            context.user_data["size_type_msg_id"] = msg.message_id
+        else:
+            # Звичайна обробка для інших питань
+            answer_value = context.user_data.get(question["key"], "—")
+            await context.bot.send_message(
+                chat_id=update.effective_chat.id,
+                text=f"{question['prompt']} ✅ {answer_value}"
+            )
+    except Exception as e:
+        # Логувати помилку
+        logging.error(f"Помилка при оновленні повідомлення: {e}")
+        pass
 
-    # --- Кінець циклу ---
-
+    # Якщо редагуємо - повертаємо до підтвердження
+    if context.user_data.get("editing_mode"):
+        context.user_data.pop("editing_mode", None)
+        context.user_data["question_index"] = len(QUESTIONS)
+        return await ask_question(update, context)
+    
     context.user_data["question_index"] = index + 1
     return await ask_question(update, context)
 
-async def handle_multi_unload_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    text = (update.message.text or "").strip()
-    if text == "Додати точку розвантаження":
-        # Повернутися до першого питання блоку розвантаження
-        unload_start_index = next(i for i, q in enumerate(QUESTIONS) if q["key"] == UNLOAD_BLOCK_KEYS[0])
-        context.user_data["question_index"] = unload_start_index
-        return await ask_question(update, context)
-    elif text == "Завершити точки розвантаження":
-        # Перейти до наступного питання після блоку розвантаження
-        unload_end_index = next(i for i, q in enumerate(QUESTIONS) if q["key"] == UNLOAD_BLOCK_KEYS[-1])
-        context.user_data["question_index"] = unload_end_index + 1
-        return await ask_question(update, context)
-    else:
-        await update.message.reply_text("Оберіть опцію: Додати точку розвантаження або Завершити точки розвантаження.")
-        return MULTI_UNLOAD_CONFIRM
 
 async def handle_custom_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     text = (update.message.text or "").strip()
