@@ -1250,18 +1250,6 @@ async def handle_date_type(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             
             fake_update = type('obj', (object,), {'message': FakeMessage(update.callback_query.message.chat_id), 'effective_user': update.effective_user})()
             return await ask_question(fake_update, context)
-            
-        elif date_type == "period":
-            if "date_period_start" not in context.user_data:
-                context.user_data["date_period_start"] = selected_date
-                
-                # Показуємо календар для кінцевої дати
-                calendar = _build_month_calendar(selected_dt.year, selected_dt.month)
-                await update.callback_query.edit_message_text(
-                    "Оберіть кінцеву дату перевезення:",
-                    reply_markup=calendar
-                )
-                return DATE_PERIOD_END
     return DATE_CALENDAR
 
 
