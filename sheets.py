@@ -148,42 +148,6 @@ def export_to_sheets(data: Dict[str, Any]) -> bool:
         # --- Декілька точок розвантаження ---
         unloads = data.get("unloads")
         if unloads and isinstance(unloads, list) and len(unloads) > 0:
-            # Підготувати спільні змінні для всіх рядків
-            # Форматування size_type_display
-            size_type = data.get("size_type", "")
-            big_bag_weight = data.get("big_bag_weight", "")
-            if size_type == "Біг-бег" and big_bag_weight and big_bag_weight != "—":
-                size_type_display = f"Біг-бег - {big_bag_weight} кг/шт"
-            else:
-                size_type_display = size_type
-            # Форматування обсягу
-            volume = data.get("volume", "—")
-            if volume != "—":
-                if data.get("size_type") == "Біг-бег":
-                    volume_display = f"{volume} шт"
-                elif data.get("size_type") in ["Насип", "Рідкі"]:
-                    volume_display = f"{volume} т"
-                else:
-                    volume_display = f"{volume} т"
-            else:
-                volume_display = "—"
-            # Дата/період
-            date_period = data.get("date_period", "—")
-            date_start = "—"
-            date_end = "—"
-            if date_period and date_period != "—":
-                if " - " in date_period:
-                    parts = date_period.split(" - ")
-                    if len(parts) == 2:
-                        date_start = parts[0].strip()
-                        date_end = parts[1].strip()
-                    else:
-                        date_start = date_period
-                else:
-                    date_start = date_period
-            # Контакт на завантаженні
-            load_contact = data.get("load_contact", "—")
-            load_name, load_phone = _parse_contact(load_contact)
             headers = worksheet.row_values(1)
             if not headers:
                 logger.error(f"Sheet '{worksheet_name}' has empty header row")

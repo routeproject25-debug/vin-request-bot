@@ -1,43 +1,3 @@
-async def handle_calendar(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Обробка callback-календаря для вибору дати перевезення"""
-    await update.callback_query.answer()
-    action, payload = _parse_calendar_callback(update.callback_query.data)
-    if action == "NAV" and payload:
-        year_str, month_str = payload.split("-")
-        calendar = _build_month_calendar(int(year_str), int(month_str))
-        await update.callback_query.edit_message_text(
-            "Оберіть дату перевезення:",
-            reply_markup=calendar
-        )
-        return DATE_CALENDAR
-
-    if action == "DATE" and payload:
-        selected_dt = datetime.strptime(payload, "%Y-%m-%d").date()
-        selected_date = selected_dt.strftime("%d.%m.%Y")
-        context.user_data["date"] = selected_date
-        await update.callback_query.edit_message_text(
-            f"Дата перевезення: ✅ {selected_date}"
-        )
-        # Перехід до наступного питання
-        if context.user_data.get("editing_mode"):
-            context.user_data.pop("editing_mode", None)
-            context.user_data["question_index"] = len(QUESTIONS)
-        else:
-            index = context.user_data.get("question_index", 0)
-            context.user_data["question_index"] = index + 1
-
-        class FakeMessage:
-            def __init__(self, chat_id):
-                self.chat_id = chat_id
-                self.message_id = None
-            async def reply_text(self, *args, **kwargs):
-                return await update.callback_query.message.reply_text(*args, **kwargs)
-
-        fake_update = type('obj', (object,), {'message': FakeMessage(update.callback_query.message.chat_id), 'effective_user': update.effective_user})()
-        return await ask_question(fake_update, context)
-
-    return DATE_CALENDAR
-
 UNLOAD_BLOCK_KEYS = [
     "unload_city",
     "unload_place",
@@ -900,6 +860,11 @@ async def handle_answer(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
 
     # Обробка кнопки Назад
     if text == "⬅️ Назад":
+        # Видалити повідомлення користувача
+        try:
+            await update.message.delete()
+        except:
+            pass
         if index > 0:
             context.user_data["question_index"] = index - 1
             return await ask_question(update, context)
@@ -1249,31 +1214,63 @@ async def handle_date_type(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             "Оберіть дату перевезення:",
             reply_markup=calendar
         )
-        # --- Відповідь без видалення ---
-        # Визначаємо question для поточного індексу
-        index = context.user_data.get("question_index", 0)
-        question = _get_question(index)
-        # Спеціальна обробка для big_bag_weight: об'єднати з size_type
-        if question["key"] == "big_bag_weight":
-            size_type = context.user_data.get("size_type", "—")
-            big_bag_weight = context.user_data.get("big_bag_weight", "—")
-            combined_text = f"Габарит / негабарит: ✅ {size_type} - {big_bag_weight} кг/шт"
+        return DATE_CALENDAR
+    elif text == "📆 Період перевезення":
+        context.user_data["date_type"] = "period"
+        # Видалити повідомлення користувача
+        try:
+            await update.message.delete()
+        except:
+            pass
+        # Показати нове повідомлення з відповідю
+        try:
+            last_msg_id = context.user_data.get("last_question_message_id")
+            if last_msg_id:
+                try:
+                    await context.bot.delete_message(
+                        chat_id=update.effective_chat.id,
+                        message_id=last_msg_id
+                    )
+                except:
+                    pass
             await context.bot.send_message(
                 chat_id=update.effective_chat.id,
-                text=combined_text
+                text="Оберіть тип перевезення: 📆 Період ✅"
             )
-        elif question["key"] == "size_type" and context.user_data.get("size_type") == "Біг-бег":
-            answer_value = context.user_data.get(question["key"], "—")
-            await context.bot.send_message(
-                chat_id=update.effective_chat.id,
-                text=f"{question['prompt']} ✅ {answer_value}"
-            )
-        else:
-            answer_value = context.user_data.get(question["key"], "—")
-            await context.bot.send_message(
-                chat_id=update.effective_chat.id,
-                text=f"{question['prompt']} ✅ {answer_value}"
-            )
+        except:
+            pass
+        today = date.today()
+        calendar = _build_month_calendar(today.year, today.month)
+        await update.message.reply_text(
+            "Оберіть початкову дату перевезення:",
+            reply_markup=calendar
+        )
+        return DATE_CALENDAR
+    else:
+        await update.message.reply_text("Будь ласка, оберіть тип перевезення.")
+        return DATE_TYPE
+
+
+async def handle_calendar(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Обробка вибору дати з календаря"""
+    await update.callback_query.answer()
+    action, payload = _parse_calendar_callback(update.callback_query.data)
+    date_type = context.user_data.get("date_type")
+
+    if action == "NAV" and payload:
+        year_str, month_str = payload.split("-")
+        calendar = _build_month_calendar(int(year_str), int(month_str))
+        prompt = "Оберіть дату перевезення:" if date_type == "single" else "Оберіть початкову дату перевезення:"
+        await update.callback_query.edit_message_text(prompt, reply_markup=calendar)
+        return DATE_CALENDAR
+
+    if action == "DATE" and payload:
+        selected_dt = datetime.strptime(payload, "%Y-%m-%d").date()
+        selected_date = selected_dt.strftime("%d.%m.%Y")
+        
+        if date_type == "single":
+            context.user_data["date_period"] = selected_date
+            await update.callback_query.edit_message_text(f"Дата перевезення: {selected_date}")
             
             # Переходимо до наступного питання або підтвердження
             if context.user_data.get("editing_mode"):
@@ -1293,7 +1290,19 @@ async def handle_date_type(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             
             fake_update = type('obj', (object,), {'message': FakeMessage(update.callback_query.message.chat_id), 'effective_user': update.effective_user})()
             return await ask_question(fake_update, context)
-        return DATE_CALENDAR
+            
+        elif date_type == "period":
+            if "date_period_start" not in context.user_data:
+                context.user_data["date_period_start"] = selected_date
+                
+                # Показуємо календар для кінцевої дати
+                calendar = _build_month_calendar(selected_dt.year, selected_dt.month)
+                await update.callback_query.edit_message_text(
+                    "Оберіть кінцеву дату перевезення:",
+                    reply_markup=calendar
+                )
+                return DATE_PERIOD_END
+    return DATE_CALENDAR
 
 
 async def handle_period_end(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
