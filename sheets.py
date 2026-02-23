@@ -126,43 +126,24 @@ def export_to_sheets(data: Dict[str, Any]) -> bool:
         client = get_sheets_client()
         if not client:
             return False
-        
         spreadsheet_id = os.getenv("GOOGLE_SPREADSHEET_ID")
         worksheet_name = os.getenv("GOOGLE_WORKSHEET_NAME", "ЗАЯВКА")
-        
         if not spreadsheet_id:
             logger.error("GOOGLE_SPREADSHEET_ID not set")
             return False
-        
-        # Відкрити таблицю
         spreadsheet = client.open_by_key(spreadsheet_id)
         worksheet = spreadsheet.worksheet(worksheet_name)
-        
-        # Отримати поточну дату/час у Київському часі
         kyiv_tz = pytz.timezone('Europe/Kyiv')
         now = datetime.now(kyiv_tz)
         date_str = now.strftime("%d.%m.%Y")
         time_str = now.strftime("%H:%M")
-        
-        # Розпарсити контакти
-        load_contact = data.get("load_contact", "—")
-        unload_contact = data.get("unload_contact", "—")
-        
-        load_name, load_phone = _parse_contact(load_contact)
-        unload_name, unload_phone = _parse_contact(unload_contact)
-        
-        # Форматувати обсяг з одиницею
         size_type = data.get("size_type", "")
         big_bag_weight = data.get("big_bag_weight", "")
         volume = data.get("volume", "—")
-        
-        # Для Біг-бегу показати вагу в колонці "Габарит / негабарит"
         if size_type == "Біг-бег" and big_bag_weight and big_bag_weight != "—":
             size_type_display = f"Біг-бег - {big_bag_weight} кг/шт"
         else:
             size_type_display = size_type
-        
-        # Форматувати обсяг
         if volume != "—":
             if data.get("size_type") == "Біг-бег":
                 volume_display = f"{volume} шт"
@@ -172,16 +153,11 @@ def export_to_sheets(data: Dict[str, Any]) -> bool:
                 volume_display = f"{volume} т"
         else:
             volume_display = "—"
-        
-        # Обробити дату/період
         date_period = data.get("date_period", "—")
         date_start = "—"
         date_end = "—"
-        
         if date_period and date_period != "—":
-            # Перевірити, чи це період (містить " - ")
             if " - " in date_period:
-                # Розділити на дату початку і кінця
                 parts = date_period.split(" - ")
                 if len(parts) == 2:
                     date_start = parts[0].strip()
@@ -189,53 +165,89 @@ def export_to_sheets(data: Dict[str, Any]) -> bool:
                 else:
                     date_start = date_period
             else:
-                # Одна дата - це дата початку
                 date_start = date_period
-        
-        # Підготувати рядок даних по заголовках таблиці
         headers = worksheet.row_values(1)
         if not headers:
             logger.error(f"Sheet '{worksheet_name}' has empty header row")
             return False
         header_map = {h.strip(): idx for idx, h in enumerate(headers) if h and h.strip()}
-        row = ["" for _ in headers]
-        values_by_header = {
-            "Дата": date_str,
-            "Час": time_str,
-            "Ініціатор заявки": data.get("initiator", "—"),
-            "Підприємство": data.get("company", "—"),
-            "Тип авто": data.get("vehicle_type", "—"),
-            "Вид вантажу": data.get("cargo_type", "—"),
-            "Габарит / негабарит": size_type_display,
-            "Обсяг": volume_display,
-            "Примітка": data.get("notes", "—"),
-            "Дата початку": date_start,
-            "Дата кінця": date_end,
-            "Населений пункт завантаження": data.get("load_city", "—"),
-            "Склад завантаження": data.get("load_place", "—"),
-            "Спосіб завантаження": data.get("load_method", "—"),
-            "Контакт на завантаженні": load_name,
-            "Номер телефона на завантаженні": load_phone,
-            "Населений пункт розвантаження": data.get("unload_city", "—"),
-            "Склад розвантаження": data.get("unload_place", "—"),
-            "Спосіб розвантаження": data.get("unload_method", "—"),
-            "Контакт на розвантаженні": unload_name,
-            "Номер телефона на розвантаженні": unload_phone,
-        }
-
-        for header, value in values_by_header.items():
-            idx = header_map.get(header)
-            if idx is None:
-                logger.warning(f"Header '{header}' not found in sheet '{worksheet_name}'")
-                continue
-            row[idx] = value
-        
-        # Додати рядок в перший вільний рядок (найновіші внизу)
-        worksheet.append_row(row, value_input_option='USER_ENTERED')
-        
+        # --- Головна зміна: підтримка декількох точок розвантаження ---
+        unload_points = data.get("unload_points")
+        if unload_points and isinstance(unload_points, list) and len(unload_points) > 0:
+            # Для кожної точки розвантаження — окремий рядок
+            for point in unload_points:
+                unload_contact = point.get("unload_contact", "—")
+                unload_name, unload_phone = _parse_contact(unload_contact)
+                values_by_header = {
+                    "Дата": date_str,
+                    "Час": time_str,
+                    "Ініціатор заявки": data.get("initiator", "—"),
+                    "Підприємство": data.get("company", "—"),
+                    "Тип авто": data.get("vehicle_type", "—"),
+                    "Вид вантажу": data.get("cargo_type", "—"),
+                    "Габарит / негабарит": size_type_display,
+                    "Обсяг": volume_display,
+                    "Примітка": data.get("notes", "—"),
+                    "Дата початку": date_start,
+                    "Дата кінця": date_end,
+                    "Населений пункт завантаження": data.get("load_city", "—"),
+                    "Склад завантаження": data.get("load_place", "—"),
+                    "Спосіб завантаження": data.get("load_method", "—"),
+                    "Контакт на завантаженні": _parse_contact(data.get("load_contact", "—"))[0],
+                    "Номер телефона на завантаженні": _parse_contact(data.get("load_contact", "—"))[1],
+                    "Населений пункт розвантаження": point.get("unload_city", "—"),
+                    "Склад розвантаження": point.get("unload_place", "—"),
+                    "Спосіб розвантаження": point.get("unload_method", "—"),
+                    "Контакт на розвантаженні": unload_name,
+                    "Номер телефона на розвантаженні": unload_phone,
+                }
+                row = ["" for _ in headers]
+                for header, value in values_by_header.items():
+                    idx = header_map.get(header)
+                    if idx is None:
+                        logger.warning(f"Header '{header}' not found in sheet '{worksheet_name}'")
+                        continue
+                    row[idx] = value
+                worksheet.append_row(row, value_input_option='USER_ENTERED')
+        else:
+            # Старий режим — одна точка розвантаження
+            load_contact = data.get("load_contact", "—")
+            unload_contact = data.get("unload_contact", "—")
+            load_name, load_phone = _parse_contact(load_contact)
+            unload_name, unload_phone = _parse_contact(unload_contact)
+            values_by_header = {
+                "Дата": date_str,
+                "Час": time_str,
+                "Ініціатор заявки": data.get("initiator", "—"),
+                "Підприємство": data.get("company", "—"),
+                "Тип авто": data.get("vehicle_type", "—"),
+                "Вид вантажу": data.get("cargo_type", "—"),
+                "Габарит / негабарит": size_type_display,
+                "Обсяг": volume_display,
+                "Примітка": data.get("notes", "—"),
+                "Дата початку": date_start,
+                "Дата кінця": date_end,
+                "Населений пункт завантаження": data.get("load_city", "—"),
+                "Склад завантаження": data.get("load_place", "—"),
+                "Спосіб завантаження": data.get("load_method", "—"),
+                "Контакт на завантаженні": load_name,
+                "Номер телефона на завантаженні": load_phone,
+                "Населений пункт розвантаження": data.get("unload_city", "—"),
+                "Склад розвантаження": data.get("unload_place", "—"),
+                "Спосіб розвантаження": data.get("unload_method", "—"),
+                "Контакт на розвантаженні": unload_name,
+                "Номер телефона на розвантаженні": unload_phone,
+            }
+            row = ["" for _ in headers]
+            for header, value in values_by_header.items():
+                idx = header_map.get(header)
+                if idx is None:
+                    logger.warning(f"Header '{header}' not found in sheet '{worksheet_name}'")
+                    continue
+                row[idx] = value
+            worksheet.append_row(row, value_input_option='USER_ENTERED')
         logger.info(f"Successfully exported request to Google Sheets (spreadsheet: {spreadsheet_id})")
         return True
-        
     except Exception as e:
         logger.error(f"Error exporting to Google Sheets: {e}")
         return False
