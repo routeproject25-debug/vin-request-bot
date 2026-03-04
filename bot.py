@@ -2241,7 +2241,7 @@ async def my_requests_command(update: Update, context: ContextTypes.DEFAULT_TYPE
         )
         return START
 
-    lines = ["Ваші останні заявки:"]
+    await update.message.reply_text("Ваші останні заявки:", reply_markup=ReplyKeyboardRemove())
     for req in requests:
         rid = req.get("request_id", "—")
         status = req.get("status", "—")
@@ -2252,17 +2252,101 @@ async def my_requests_command(update: Update, context: ContextTypes.DEFAULT_TYPE
         cargo = data.get("cargo_type", "—")
         load_city = data.get("load_city", "—")
         unload_city = data.get("unload_city", "—")
-        lines.append(
+        info_text = (
             f"• {rid} | {status} | {created_str}\n"
-            f"  👤 {initiator} | 📦 {cargo}\n"
-            f"  📍 {load_city} → {unload_city}"
+            f"  👤 Ініціатор: {initiator}\n"
+            f"  📦 Вантаж: {cargo}\n"
+            f"  📍 Маршрут: {load_city} → {unload_city}"
         )
+        keyboard = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton(text="✏️ Редагувати", callback_data=f"REQACT:EDIT:{rid}"),
+                InlineKeyboardButton(text="🗑️ Видалити", callback_data=f"REQACT:DEL:{rid}"),
+            ]
+        ])
+        await update.message.reply_text(info_text, reply_markup=keyboard)
 
-    lines.append("\nЩоб відредагувати, введіть:")
-    lines.append("/edit_request ID_ЗАЯВКИ")
-    lines.append("Приклад: /edit_request A1B2C3D4")
+    await update.message.reply_text(
+        "Можна також вручну: /edit_request ID_ЗАЯВКИ",
+        reply_markup=ReplyKeyboardRemove()
+    )
+    return START
 
-    await update.message.reply_text("\n".join(lines), reply_markup=ReplyKeyboardRemove())
+
+async def handle_request_action_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Обробка кнопок дій під заявкою (редагувати/видалити)."""
+    query = update.callback_query
+    if not query:
+        return START
+
+    await query.answer()
+    payload = query.data or ""
+    parts = payload.split(":", 2)
+    if len(parts) != 3:
+        await query.answer("Невірна дія", show_alert=True)
+        return START
+
+    _, action, request_id = parts
+    request_id = request_id.strip().upper()
+
+    user = update.effective_user
+    request = db.get_request(request_id)
+    if not request:
+        await query.answer("Заявку не знайдено", show_alert=True)
+        return START
+
+    if int(request.get("user_id", 0)) != int(user.id if user else 0):
+        await query.answer("Можна керувати тільки власними заявками", show_alert=True)
+        return START
+
+    if action == "EDIT":
+        if (request.get("status") or "").strip().upper() == "ВИДАЛЕНО":
+            await query.answer("Заявка видалена. Спочатку відновіть її.", show_alert=True)
+            return START
+
+        request_data = request.get("request_data") or {}
+        if not isinstance(request_data, dict):
+            await query.answer("Дані заявки пошкоджені", show_alert=True)
+            return START
+
+        context.user_data.clear()
+        context.user_data.update(request_data)
+        context.user_data["request_id"] = request_id
+        context.user_data["last_request_id"] = request_id
+        context.user_data["editing_mode"] = True
+        context.user_data["is_request_edit"] = True
+
+        await query.message.reply_text(f"✏️ Відкрив заявку {request_id} для редагування")
+        fake_update = type('obj', (object,), {'message': query.message, 'effective_user': update.effective_user})()
+        return await show_edit_fields(fake_update, context)
+
+    if action == "DEL":
+        db.mark_request_as_deleted(request_id)
+
+        if request.get("message_id"):
+            chat_id = os.getenv("TARGET_CHAT_ID")
+            try:
+                await context.bot.delete_message(
+                    chat_id=chat_id,
+                    message_id=request["message_id"]
+                )
+            except Exception as e:
+                logging.error(f"Failed to delete group message for {request_id}: {e}")
+
+        try:
+            sheets.mark_request_deleted(request_id)
+        except Exception as e:
+            logging.error(f"Failed to mark request as deleted in sheets: {e}")
+
+        try:
+            await query.edit_message_reply_markup(reply_markup=None)
+        except Exception:
+            pass
+
+        await query.message.reply_text(f"✅ Заявку {request_id} видалено")
+        return START
+
+    await query.answer("Невідома дія", show_alert=True)
     return START
 
 
@@ -2333,7 +2417,10 @@ def build_app() -> Application:
             MessageHandler(filters.Regex("^📝 (Зробити заявку|Нова заявка)$"), start),
         ],
         states={
-            START: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_start_menu_choice)],
+            START: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_start_menu_choice),
+                CallbackQueryHandler(handle_request_action_callback, pattern=r"^REQACT:"),
+            ],
             LOAD_TEMPLATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_start_menu_choice)],
             TEMPLATE_SELECT: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_template_select)],
             DELETE_TEMPLATE_CONFIRM: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_delete_template_confirm)],
@@ -2366,6 +2453,7 @@ def build_app() -> Application:
     app.add_handler(CommandHandler("restore_request", restore_request_command))
     app.add_handler(CommandHandler("my_requests", my_requests_command))
     app.add_handler(CommandHandler("edit_request", edit_request_command))
+    app.add_handler(CallbackQueryHandler(handle_request_action_callback, pattern=r"^REQACT:"))
     return app
 
 
