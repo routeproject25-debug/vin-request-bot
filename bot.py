@@ -1858,16 +1858,75 @@ async def confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         request_id = context.user_data.get("request_id") or uuid.uuid4().hex[:8].upper()
         context.user_data["request_id"] = request_id
         application_text = _format_application(context.user_data)
-        
-        # Додаємо згадку користувача
         user = update.effective_user
         user_mention = f"@{user.username}" if user.username else user.full_name
         notification = f"📋 {user_mention} створив нову заявку:\n🆔 ID заявки: {request_id}\n\n{application_text}"
         
-        await context.bot.send_message(
-            chat_id=chat_id,
-            text=notification,
-        )
+        # Перевірити чи це редагування існуючої заявки
+        is_editing = context.user_data.get("editing_mode", False)
+        message_id = None
+        
+        if is_editing:
+            # Отримати message_id з БД
+            try:
+                saved_request = db.get_request(request_id)
+                if saved_request:
+                    message_id = saved_request.get("message_id")
+                    thread_id = saved_request.get("thread_id")
+                    
+                    if message_id:
+                        # Редагувати існуюче повідомлення в групі
+                        await context.bot.edit_message_text(
+                            chat_id=chat_id,
+                            message_id=message_id,
+                            text=notification,
+                        )
+                        logging.info(f"Updated message {message_id} for request {request_id}")
+                    else:
+                        # Якщо message_id немає - надіслати як нове
+                        message = await context.bot.send_message(
+                            chat_id=chat_id,
+                            text=notification,
+                            message_thread_id=thread_id,
+                        )
+                        message_id = message.message_id
+            except Exception as e:
+                logging.error(f"Error updating message: {e}")
+                # Якщо помилка - надіслати як нове
+                message = await context.bot.send_message(
+                    chat_id=chat_id,
+                    text=notification,
+                )
+                message_id = message.message_id
+        else:
+            # Нова заявка - надіслати нове повідомлення
+            thread_id = context.user_data.get("thread_id")
+            message = await context.bot.send_message(
+                chat_id=chat_id,
+                text=notification,
+                message_thread_id=thread_id,
+            )
+            message_id = message.message_id
+            
+            # Зберегти нову заявку в БД
+            try:
+                db.save_request(
+                    request_id=request_id,
+                    user_id=user.id,
+                    request_data=context.user_data,
+                    message_id=message_id,
+                    thread_id=thread_id
+                )
+            except Exception as e:
+                logging.error(f"Error saving request to database: {e}")
+        
+        # Оновити дані в БД (для редагування)
+        if is_editing:
+            try:
+                db.update_request_data(request_id, context.user_data)
+                logging.info(f"Updated request data for {request_id}")
+            except Exception as e:
+                logging.error(f"Error updating request data: {e}")
         
         # Експорт у Google Sheets
         export_success = False
@@ -1878,7 +1937,6 @@ async def confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
                 # Сповістити адміна про помилку
                 admin_id = os.getenv("ADMIN_USER_ID")
                 if admin_id:
-                    user = update.effective_user
                     user_info = f"@{user.username}" if user.username else user.full_name
                     try:
                         await context.bot.send_message(
@@ -1897,7 +1955,6 @@ async def confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
             # Сповістити адміна
             admin_id = os.getenv("ADMIN_USER_ID")
             if admin_id:
-                user = update.effective_user
                 user_info = f"@{user.username}" if user.username else user.full_name
                 try:
                     await context.bot.send_message(
@@ -1931,7 +1988,31 @@ async def confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         except Exception as e:
             logging.error(f"Failed to save contacts: {e}")
         
-        # Запропонувати зберегти як шаблон (для всіх типів заявок)
+        # Якщо це був режим редагування - показати меню повернення до редагування
+        if is_editing:
+            keyboard = ReplyKeyboardMarkup(
+                [
+                    [KeyboardButton(text="✏️ Редагувати заявку")],
+                    [KeyboardButton(text="🗑️ Видалити заявку")],
+                    [KeyboardButton(text="✅ Готово")],
+                ],
+                resize_keyboard=True,
+                one_time_keyboard=True,
+            )
+            await update.message.reply_text(
+                (
+                    f"✅ Заявку оновлено!\n"
+                    f"📊 Експорт у Google Sheets: {'успішно' if export_success else '❌ не вдалося'}\n"
+                    f"🆔 ID заявки: {request_id}\n\n"
+                    f"Що робити далі?"
+                ),
+                reply_markup=keyboard
+            )
+            context.user_data["last_request_id"] = request_id
+            context.user_data.pop("editing_mode", None)
+            return START
+        
+        # Для нової заявки - запропонувати зберегти як шаблон
         keyboard = ReplyKeyboardMarkup(
             [[KeyboardButton(text="💾 Зберегти як шаблон")], [KeyboardButton(text="📝 Нова заявка")]],
             resize_keyboard=True,
