@@ -16,6 +16,16 @@ SCOPES = [
 ]
 
 
+def _column_to_letter(col_num: int) -> str:
+    """Convert 1-based column number to Google Sheets column letter."""
+    result = ""
+    n = col_num
+    while n > 0:
+        n, remainder = divmod(n - 1, 26)
+        result = chr(65 + remainder) + result
+    return result
+
+
 def _parse_contact(contact_str: str) -> Tuple[str, str]:
     """
     Розпарсити контактну інформацію на ПІБ та номер телефону
@@ -252,9 +262,30 @@ def export_to_sheets(data: Dict[str, Any]) -> Tuple[bool, str]:
         
         logger.info(f"✓ Row data prepared with {len([v for v in row if v])} non-empty cells")
         
-        # Додати рядок на позицію 2 (після заголовка) — всередину таблиці, найновіші вверху
-        logger.info("Attempting to insert row at position 2...")
-        worksheet.insert_row(row, index=2, value_input_option='USER_ENTERED')
+        # Якщо заявка з таким ID вже існує - оновити її рядок, а не додавати дубль
+        request_id = (data.get("request_id") or "").strip().upper()
+        id_idx = header_map.get("ID заявки")
+        existing_row = None
+
+        if request_id and id_idx is not None:
+            id_column_values = worksheet.col_values(id_idx + 1)
+            for row_number in range(2, len(id_column_values) + 1):
+                row_id = (id_column_values[row_number - 1] or "").strip().upper()
+                if row_id == request_id:
+                    existing_row = row_number
+                    break
+
+        if existing_row:
+            logger.info(f"Updating existing row for request_id={request_id} at row {existing_row}")
+            for header, value in values_by_header.items():
+                idx = header_map.get(header)
+                if idx is None:
+                    continue
+                worksheet.update_cell(existing_row, idx + 1, value)
+        else:
+            # Нова заявка: додати рядок на позицію 2 (після заголовка)
+            logger.info("Attempting to insert row at position 2...")
+            worksheet.insert_row(row, index=2, value_input_option='USER_ENTERED')
         
         logger.info(f"✅ Successfully exported request to Google Sheets (spreadsheet: {spreadsheet_id})")
         return True, ""

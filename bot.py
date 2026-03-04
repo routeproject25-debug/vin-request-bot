@@ -631,7 +631,7 @@ async def handle_start_menu_choice(update: Update, context: ContextTypes.DEFAULT
             request = db.get_request(request_id)
             if request and request.get("message_id"):
                 # Видалити з групового чату
-                chat_id = os.getenv("TELEGRAM_CHAT_ID")
+                chat_id = os.getenv("TARGET_CHAT_ID")
                 thread_id = context.user_data.get("thread_id")
                 try:
                     await context.bot.delete_message(
