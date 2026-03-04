@@ -2012,24 +2012,30 @@ async def confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
             context.user_data.pop("editing_mode", None)
             return START
         
-        # Для нової заявки - запропонувати зберегти як шаблон
-        keyboard = ReplyKeyboardMarkup(
-            [[KeyboardButton(text="💾 Зберегти як шаблон")], [KeyboardButton(text="📝 Нова заявка")]],
-            resize_keyboard=True,
-        )
+            # Для нових заявок - також показати меню редагування/видалення
+            keyboard = ReplyKeyboardMarkup(
+                [
+                    [KeyboardButton(text="✏️ Редагувати заявку")],
+                    [KeyboardButton(text="🗑️ Видалити заявку")],
+                    [KeyboardButton(text="✅ Готово")],
+                ],
+                resize_keyboard=True,
+                one_time_keyboard=True,
+            )
         await update.message.reply_text(
             (
                 f"✅ Заявку надіслано!\n"
                 f"📊 Експорт у Google Sheets: {'успішно' if export_success else '❌ не вдалося'}\n"
                 f"🆔 ID заявки: {request_id}\n\n"
-                f"Щоб позначити як видалену без входу в таблицю:\n"
-                f"/delete_request {request_id}\n\n"
-                f"Бажаєте зберегти дані як шаблон для повторного використання?"
+                    f"Що робити далі?"
             ),
             reply_markup=keyboard
         )
-        context.user_data["pending_save_template"] = True
-        return SAVE_TEMPLATE_CONFIRM
+        
+            # Зберегти ID заявки для наступного меню
+            context.user_data["last_request_id"] = request_id
+        
+            return START
 
     await update.message.reply_text("Будь ласка, оберіть ТАК або Почати спочатку.")
     return CONFIRM
