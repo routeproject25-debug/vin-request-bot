@@ -123,9 +123,14 @@ def export_to_sheets(data: Dict[str, Any]) -> bool:
     21. Номер телефона на розвантаженні
     """
     try:
+        logger.info("=== Starting export to Google Sheets ===")
+        logger.info(f"Request ID: {data.get('request_id', 'N/A')}")
+        
         client = get_sheets_client()
         if not client:
+            logger.error("Failed to get Google Sheets client")
             return False
+        logger.info("✓ Google Sheets client created")
         
         spreadsheet_id = os.getenv("GOOGLE_SPREADSHEET_ID")
         worksheet_name = os.getenv("GOOGLE_WORKSHEET_NAME", "ЗАЯВКА")
@@ -134,9 +139,14 @@ def export_to_sheets(data: Dict[str, Any]) -> bool:
             logger.error("GOOGLE_SPREADSHEET_ID not set")
             return False
         
+        logger.info(f"Opening spreadsheet: {spreadsheet_id}, worksheet: {worksheet_name}")
+        
         # Відкрити таблицю
         spreadsheet = client.open_by_key(spreadsheet_id)
+        logger.info(f"✓ Spreadsheet opened: {spreadsheet.title}")
+        
         worksheet = spreadsheet.worksheet(worksheet_name)
+        logger.info(f"✓ Worksheet opened: {worksheet.title}")
         
         # Отримати поточну дату/час у Київському часі
         kyiv_tz = pytz.timezone('Europe/Kyiv')
@@ -194,10 +204,15 @@ def export_to_sheets(data: Dict[str, Any]) -> bool:
         
         # Підготувати рядок даних по заголовках таблиці
         headers = worksheet.row_values(1)
+        logger.info(f"✓ Headers read: {len(headers)} columns")
+        logger.debug(f"Headers: {headers}")
+        
         if not headers:
             logger.error(f"Sheet '{worksheet_name}' has empty header row")
             return False
+        
         header_map = {h.strip(): idx for idx, h in enumerate(headers) if h and h.strip()}
+        logger.info(f"✓ Header map created with {len(header_map)} entries")
         row = ["" for _ in headers]
         values_by_header = {
             "ID заявки": data.get("request_id", "—"),
@@ -232,14 +247,19 @@ def export_to_sheets(data: Dict[str, Any]) -> bool:
                 continue
             row[idx] = value
         
+        logger.info(f"✓ Row data prepared with {len([v for v in row if v])} non-empty cells")
+        
         # Додати рядок в перший вільний рядок (найновіші внизу)
+        logger.info("Attempting to append row to sheet...")
         worksheet.append_row(row, value_input_option='USER_ENTERED')
         
-        logger.info(f"Successfully exported request to Google Sheets (spreadsheet: {spreadsheet_id})")
+        logger.info(f"✅ Successfully exported request to Google Sheets (spreadsheet: {spreadsheet_id})")
         return True
         
     except Exception as e:
-        logger.error(f"Error exporting to Google Sheets: {e}")
+        import traceback
+        logger.error(f"❌ Error exporting to Google Sheets: {e}")
+        logger.error(f"Full traceback:\n{traceback.format_exc()}")
         return False
 
 
