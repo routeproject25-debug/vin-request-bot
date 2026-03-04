@@ -54,6 +54,21 @@ def init_db():
             )
         """)
         
+        # Таблиця заявок (requests)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS requests (
+                id SERIAL PRIMARY KEY,
+                request_id VARCHAR(8) NOT NULL UNIQUE,
+                message_id BIGINT,
+                user_id BIGINT NOT NULL,
+                thread_id INTEGER,
+                request_data JSONB NOT NULL,
+                status VARCHAR(20) DEFAULT 'АКТИВНА',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        
         # Міграція: оновити тип user_id з INTEGER на BIGINT (якщо таблиці вже існують)
         try:
             cursor.execute("""
@@ -81,6 +96,14 @@ def init_db():
         cursor.execute("""
             CREATE INDEX IF NOT EXISTS idx_contacts_user_id 
             ON contacts(user_id)
+        """)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_requests_request_id 
+            ON requests(request_id)
+        """)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_requests_user_id 
+            ON requests(user_id)
         """)
         
         conn.commit()
@@ -276,4 +299,152 @@ def get_user_contacts(user_id: int) -> List[Dict[str, str]]:
         ]
     except Exception as e:
         logger.error(f"Error fetching contacts: {e}")
+        return []
+
+
+def save_request(request_id: str, user_id: int, request_data: Dict[str, Any], message_id: int = None, thread_id: int = None) -> bool:
+    """Зберегти заявку в БД"""
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute(
+            """
+            INSERT INTO requests (request_id, user_id, request_data, message_id, thread_id, status)
+            VALUES (%s, %s, %s, %s, %s, %s)
+            """,
+            (request_id, user_id, Json(request_data), message_id, thread_id, "АКТИВНА")
+        )
+        
+        conn.commit()
+        cursor.close()
+        conn.close()
+        logger.info(f"Request {request_id} saved for user {user_id}")
+        return True
+    except Exception as e:
+        logger.error(f"Error saving request: {e}")
+        return False
+
+
+def get_request(request_id: str) -> Optional[Dict[str, Any]]:
+    """Отримати заявку за ID"""
+    try:
+        conn = get_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+        
+        cursor.execute(
+            """
+            SELECT * FROM requests WHERE request_id = %s
+            """,
+            (request_id,)
+        )
+        
+        request = cursor.fetchone()
+        cursor.close()
+        conn.close()
+        
+        return dict(request) if request else None
+    except Exception as e:
+        logger.error(f"Error fetching request: {e}")
+        return None
+
+
+def update_request_data(request_id: str, request_data: Dict[str, Any]) -> bool:
+    """Оновити дані заявки"""
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute(
+            """
+            UPDATE requests 
+            SET request_data = %s, updated_at = CURRENT_TIMESTAMP
+            WHERE request_id = %s
+            """,
+            (Json(request_data), request_id)
+        )
+        
+        conn.commit()
+        cursor.close()
+        conn.close()
+        logger.info(f"Request {request_id} data updated")
+        return True
+    except Exception as e:
+        logger.error(f"Error updating request data: {e}")
+        return False
+
+
+def update_request_message_id(request_id: str, message_id: int) -> bool:
+    """Оновити message_id заявки"""
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute(
+            """
+            UPDATE requests 
+            SET message_id = %s, updated_at = CURRENT_TIMESTAMP
+            WHERE request_id = %s
+            """,
+            (message_id, request_id)
+        )
+        
+        conn.commit()
+        cursor.close()
+        conn.close()
+        logger.info(f"Request {request_id} message_id updated to {message_id}")
+        return True
+    except Exception as e:
+        logger.error(f"Error updating request message_id: {e}")
+        return False
+
+
+def mark_request_as_deleted(request_id: str) -> bool:
+    """Позначити заявку як видалену"""
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute(
+            """
+            UPDATE requests 
+            SET status = %s, updated_at = CURRENT_TIMESTAMP
+            WHERE request_id = %s
+            """,
+            ("ВИДАЛЕНО", request_id)
+        )
+        
+        conn.commit()
+        cursor.close()
+        conn.close()
+        logger.info(f"Request {request_id} marked as deleted")
+        return True
+    except Exception as e:
+        logger.error(f"Error marking request as deleted: {e}")
+        return False
+
+
+def get_user_requests(user_id: int, limit: int = 50) -> List[Dict[str, Any]]:
+    """Отримати всі заявки користувача"""
+    try:
+        conn = get_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+        
+        cursor.execute(
+            """
+            SELECT * FROM requests 
+            WHERE user_id = %s
+            ORDER BY created_at DESC
+            LIMIT %s
+            """,
+            (user_id, limit)
+        )
+        
+        requests = cursor.fetchall()
+        cursor.close()
+        conn.close()
+        
+        return [dict(r) for r in requests]
+    except Exception as e:
+        logger.error(f"Error fetching user requests: {e}")
         return []

@@ -595,6 +595,76 @@ async def handle_start_menu_choice(update: Update, context: ContextTypes.DEFAULT
     """Обробка вибору на початковому меню (перед початком або для продовження)"""
     text = (update.message.text or "").strip()
     
+    # Обробка меню після надіслання заявки
+    if text == "✏️ Редагувати заявку":
+        request_id = context.user_data.get("last_request_id")
+        if request_id:
+            # Отримати заявку з БД
+            request = db.get_request(request_id)
+            if request:
+                # Відновити дані заявки в context
+                context.user_data.update(request.get("request_data", {}))
+                context.user_data["request_id"] = request_id
+                context.user_data["editing_mode"] = True
+                
+                # Показати меню полів для редагування
+                return await show_edit_fields(update, context)
+            else:
+                await update.message.reply_text(
+                    f"❌ Заявка {request_id} не знайдена",
+                    reply_markup=ReplyKeyboardRemove()
+                )
+        else:
+            await update.message.reply_text(
+                "❌ ID заявки не знайдено",
+                reply_markup=ReplyKeyboardRemove()
+            )
+        return START
+    
+    elif text == "🗑️ Видалити заявку":
+        request_id = context.user_data.get("last_request_id")
+        if request_id:
+            # Позначити як видалену в БД
+            db.mark_request_as_deleted(request_id)
+            
+            # Отримати message_id
+            request = db.get_request(request_id)
+            if request and request.get("message_id"):
+                # Видалити з групового чату
+                chat_id = os.getenv("TELEGRAM_CHAT_ID")
+                thread_id = context.user_data.get("thread_id")
+                try:
+                    await context.bot.delete_message(
+                        chat_id=chat_id,
+                        message_id=request["message_id"]
+                    )
+                    logging.info(f"Deleted message {request['message_id']} from chat")
+                except Exception as e:
+                    logging.error(f"Failed to delete message: {e}")
+            
+            # Оновити Sheets
+            try:
+                sheets.mark_request_deleted(request_id)
+            except Exception as e:
+                logging.error(f"Failed to mark request as deleted in sheets: {e}")
+            
+            await update.message.reply_text(
+                f"✅ Заявку {request_id} видалено",
+                reply_markup=ReplyKeyboardRemove()
+            )
+        else:
+            await update.message.reply_text(
+                "❌ ID заявки не знайдено",
+                reply_markup=ReplyKeyboardRemove()
+            )
+        
+        context.user_data.clear()
+        return await show_start_menu(update, context)
+    
+    elif text == "✅ Готово":
+        context.user_data.clear()
+        return await show_start_menu(update, context)
+    
     # Якщо користувач вже заповнюватиме - обробити продовження/рестарт
     if text == "Продовжити":
         await update.message.reply_text(
@@ -1658,11 +1728,25 @@ async def confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         user_mention = f"@{user.username}" if user.username else user.full_name
         notification = f"📋 {user_mention} створив нову заявку:\n🆔 ID заявки: {request_id}\n\n{application_text}"
         
-        await context.bot.send_message(
+        # Надіслати в груповий чат та зберегти message_id
+        message = await context.bot.send_message(
             chat_id=chat_id,
             text=notification,
             message_thread_id=thread_id,
         )
+        message_id = message.message_id
+        
+        # Зберегти заявку в БД з message_id
+        try:
+            db.save_request(
+                request_id=request_id,
+                user_id=user.id,
+                request_data=context.user_data,
+                message_id=message_id,
+                thread_id=thread_id
+            )
+        except Exception as e:
+            logging.error(f"Error saving request to database: {e}")
         
         # Експорт у Google Sheets
         export_success = False
@@ -1728,23 +1812,30 @@ async def confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         except Exception as e:
             logging.error(f"Failed to save contacts: {e}")
         
-        # Повернення до стартового меню
+        # Показати меню редагування/видалення в приватному чаті
         keyboard = ReplyKeyboardMarkup(
-            [[KeyboardButton(text="📝 Нова заявка")]],
+            [
+                [KeyboardButton(text="✏️ Редагувати заявку")],
+                [KeyboardButton(text="🗑️ Видалити заявку")],
+                [KeyboardButton(text="✅ Готово")],
+            ],
             resize_keyboard=True,
+            one_time_keyboard=True,
         )
         await update.message.reply_text(
             (
                 f"✅ Заявку надіслано!\n"
                 f"📊 Експорт у Google Sheets: {'успішно' if export_success else '❌ не вдалося'}\n"
                 f"🆔 ID заявки: {request_id}\n\n"
-                f"Щоб позначити як видалену без входу в таблицю:\n"
-                f"/delete_request {request_id}"
+                f"Що робити далі?"
             ),
             reply_markup=keyboard
         )
-        context.user_data.clear()
-        return ConversationHandler.END
+        
+        # Зберегти ID заявки для наступного меню
+        context.user_data["last_request_id"] = request_id
+        
+        return START
 
     if text.lower() == "✏️ редагувати поля":
         return await show_edit_fields(update, context)
