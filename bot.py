@@ -2223,6 +2223,79 @@ async def restore_request_command(update: Update, context: ContextTypes.DEFAULT_
         await update.message.reply_text(f"❌ {message}")
 
 
+async def my_requests_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Показати останні заявки користувача з ID для швидкого редагування."""
+    user = update.effective_user
+    if not user:
+        return START
+
+    requests = db.get_user_requests(user.id, limit=10)
+    if not requests:
+        await update.message.reply_text(
+            "У вас ще немає збережених заявок.",
+            reply_markup=ReplyKeyboardRemove()
+        )
+        return START
+
+    lines = ["Ваші останні заявки:"]
+    for req in requests:
+        rid = req.get("request_id", "—")
+        status = req.get("status", "—")
+        created_at = req.get("created_at")
+        created_str = created_at.strftime("%d.%m %H:%M") if created_at else "—"
+        lines.append(f"• {rid} | {status} | {created_str}")
+
+    lines.append("\nЩоб відредагувати, введіть:")
+    lines.append("/edit_request ID_ЗАЯВКИ")
+    lines.append("Приклад: /edit_request A1B2C3D4")
+
+    await update.message.reply_text("\n".join(lines), reply_markup=ReplyKeyboardRemove())
+    return START
+
+
+async def edit_request_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Відкрити конкретну заявку за ID у режимі редагування."""
+    if not context.args:
+        await update.message.reply_text(
+            "Використання: /edit_request <ID_заявки>\n"
+            "Спочатку можете подивитися ID через /my_requests"
+        )
+        return START
+
+    user = update.effective_user
+    if not user:
+        return START
+
+    request_id = context.args[0].strip().upper()
+    request = db.get_request(request_id)
+    if not request:
+        await update.message.reply_text(f"❌ Заявку з ID {request_id} не знайдено")
+        return START
+
+    if int(request.get("user_id", 0)) != int(user.id):
+        await update.message.reply_text("❌ Ви можете редагувати лише власні заявки")
+        return START
+
+    if (request.get("status") or "").strip().upper() == "ВИДАЛЕНО":
+        await update.message.reply_text("❌ Цю заявку позначено як ВИДАЛЕНО. Відновіть її командою /restore_request <ID>.")
+        return START
+
+    request_data = request.get("request_data") or {}
+    if not isinstance(request_data, dict):
+        await update.message.reply_text("❌ Не вдалося прочитати дані заявки для редагування")
+        return START
+
+    context.user_data.clear()
+    context.user_data.update(request_data)
+    context.user_data["request_id"] = request_id
+    context.user_data["last_request_id"] = request_id
+    context.user_data["editing_mode"] = True
+    context.user_data["is_request_edit"] = True
+
+    await update.message.reply_text(f"✏️ Відкрив заявку {request_id} для редагування")
+    return await show_edit_fields(update, context)
+
+
 async def handle_make_request_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Обробка кнопки 📝 Зробити заявку поза ConversationHandler"""
     if update.message.text == "📝 Зробити заявку":
@@ -2242,6 +2315,8 @@ def build_app() -> Application:
     conv = ConversationHandler(
         entry_points=[
             CommandHandler("start", start),
+            CommandHandler("my_requests", my_requests_command),
+            CommandHandler("edit_request", edit_request_command),
             MessageHandler(filters.Regex("^📝 (Зробити заявку|Нова заявка)$"), start),
         ],
         states={
@@ -2265,13 +2340,19 @@ def build_app() -> Application:
             SAVE_TEMPLATE_CONFIRM: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_save_template_response)],
             SAVE_TEMPLATE_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_save_template_name)],
         },
-        fallbacks=[CommandHandler("cancel", cancel)],
+        fallbacks=[
+            CommandHandler("cancel", cancel),
+            CommandHandler("my_requests", my_requests_command),
+            CommandHandler("edit_request", edit_request_command),
+        ],
     )
 
     app.add_handler(conv)
     app.add_handler(CommandHandler("request", request_button))
     app.add_handler(CommandHandler("delete_request", delete_request_command))
     app.add_handler(CommandHandler("restore_request", restore_request_command))
+    app.add_handler(CommandHandler("my_requests", my_requests_command))
+    app.add_handler(CommandHandler("edit_request", edit_request_command))
     return app
 
 
