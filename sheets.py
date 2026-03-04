@@ -252,9 +252,9 @@ def export_to_sheets(data: Dict[str, Any]) -> Tuple[bool, str]:
         
         logger.info(f"✓ Row data prepared with {len([v for v in row if v])} non-empty cells")
         
-        # Додати рядок в перший вільний рядок (найновіші внизу)
-        logger.info("Attempting to append row to sheet...")
-        worksheet.append_row(row, value_input_option='USER_ENTERED')
+        # Додати рядок на позицію 2 (після заголовка) — всередину таблиці, найновіші вверху
+        logger.info("Attempting to insert row at position 2...")
+        worksheet.insert_row(row, index=2, value_input_option='USER_ENTERED')
         
         logger.info(f"✅ Successfully exported request to Google Sheets (spreadsheet: {spreadsheet_id})")
         return True, ""
