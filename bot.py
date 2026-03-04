@@ -2344,7 +2344,11 @@ async def handle_request_action_callback(update: Update, context: ContextTypes.D
             pass
 
         await query.message.reply_text(f"✅ Заявку {request_id} видалено")
-        return START
+        
+        # Показати меню для подальших дій
+        context.user_data.clear()
+        fake_update = type('obj', (object,), {'message': query.message, 'effective_user': update.effective_user})()
+        return await show_start_menu(fake_update, context)
 
     await query.answer("Невідома дія", show_alert=True)
     return START
