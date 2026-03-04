@@ -1734,7 +1734,13 @@ async def confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
             resize_keyboard=True,
         )
         await update.message.reply_text(
-            f"✅ Заявку надіслано!\n🆔 ID заявки: {request_id}\n\nЩоб позначити як видалену без входу в таблицю:\n/delete_request {request_id}",
+            (
+                f"✅ Заявку надіслано!\n"
+                f"📊 Експорт у Google Sheets: {'успішно' if export_success else '❌ не вдалося'}\n"
+                f"🆔 ID заявки: {request_id}\n\n"
+                f"Щоб позначити як видалену без входу в таблицю:\n"
+                f"/delete_request {request_id}"
+            ),
             reply_markup=keyboard
         )
         context.user_data.clear()
@@ -1840,7 +1846,14 @@ async def confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
             resize_keyboard=True,
         )
         await update.message.reply_text(
-            f"✅ Заявку надіслано!\n🆔 ID заявки: {request_id}\n\nЩоб позначити як видалену без входу в таблицю:\n/delete_request {request_id}\n\nБажаєте зберегти дані як шаблон для повторного використання?",
+            (
+                f"✅ Заявку надіслано!\n"
+                f"📊 Експорт у Google Sheets: {'успішно' if export_success else '❌ не вдалося'}\n"
+                f"🆔 ID заявки: {request_id}\n\n"
+                f"Щоб позначити як видалену без входу в таблицю:\n"
+                f"/delete_request {request_id}\n\n"
+                f"Бажаєте зберегти дані як шаблон для повторного використання?"
+            ),
             reply_markup=keyboard
         )
         context.user_data["pending_save_template"] = True
