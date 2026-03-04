@@ -443,7 +443,8 @@ async def show_start_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     
     buttons = [
         [KeyboardButton(text="📝 Нова заявка")],
-        [KeyboardButton(text="⚡ Швидка заявка")]
+        [KeyboardButton(text="⚡ Швидка заявка")],
+        [KeyboardButton(text="📋 Мої заявки")],
     ]
     
     if templates:
@@ -665,6 +666,9 @@ async def handle_start_menu_choice(update: Update, context: ContextTypes.DEFAULT
     elif text == "✅ Готово":
         context.user_data.clear()
         return await show_start_menu(update, context)
+
+    elif text == "📋 Мої заявки":
+        return await my_requests_command(update, context)
     
     # Якщо користувач вже заповнюватиме - обробити продовження/рестарт
     if text == "Продовжити":
@@ -2243,7 +2247,16 @@ async def my_requests_command(update: Update, context: ContextTypes.DEFAULT_TYPE
         status = req.get("status", "—")
         created_at = req.get("created_at")
         created_str = created_at.strftime("%d.%m %H:%M") if created_at else "—"
-        lines.append(f"• {rid} | {status} | {created_str}")
+        data = req.get("request_data") or {}
+        initiator = data.get("initiator", "—")
+        cargo = data.get("cargo_type", "—")
+        load_city = data.get("load_city", "—")
+        unload_city = data.get("unload_city", "—")
+        lines.append(
+            f"• {rid} | {status} | {created_str}\n"
+            f"  👤 {initiator} | 📦 {cargo}\n"
+            f"  📍 {load_city} → {unload_city}"
+        )
 
     lines.append("\nЩоб відредагувати, введіть:")
     lines.append("/edit_request ID_ЗАЯВКИ")
