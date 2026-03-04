@@ -1938,6 +1938,26 @@ async def delete_request_command(update: Update, context: ContextTypes.DEFAULT_T
         await update.message.reply_text(f"❌ {message}")
 
 
+async def restore_request_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Відновити заявку (змінити статус на АКТИВНА) в Google Sheets за ID заявки."""
+    if not context.args:
+        await update.message.reply_text(
+            "Використання: /restore_request <ID_заявки>\n"
+            "Приклад: /restore_request A1B2C3D4"
+        )
+        return
+
+    request_id = context.args[0].strip().upper()
+    user = update.effective_user
+    restored_by = f"@{user.username}" if user and user.username else (user.full_name if user else "Unknown")
+
+    success, message = sheets.restore_request(request_id, restored_by=restored_by)
+    if success:
+        await update.message.reply_text(f"✅ {message}")
+    else:
+        await update.message.reply_text(f"❌ {message}")
+
+
 async def handle_make_request_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Обробка кнопки 📝 Зробити заявку поза ConversationHandler"""
     if update.message.text == "📝 Зробити заявку":
@@ -1986,6 +2006,7 @@ def build_app() -> Application:
     app.add_handler(conv)
     app.add_handler(CommandHandler("request", request_button))
     app.add_handler(CommandHandler("delete_request", delete_request_command))
+    app.add_handler(CommandHandler("restore_request", restore_request_command))
     return app
 
 

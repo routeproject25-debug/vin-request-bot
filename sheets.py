@@ -306,3 +306,68 @@ def mark_request_deleted(request_id: str, deleted_by: str = "") -> Tuple[bool, s
     except Exception as e:
         logger.error(f"Error marking request deleted: {e}")
         return False, f"Помилка при позначенні заявки: {e}"
+
+
+def restore_request(request_id: str, restored_by: str = "") -> Tuple[bool, str]:
+    """Відновити заявку (змінити статус на АКТИВНА) за ID заявки."""
+    try:
+        if not request_id:
+            return False, "Порожній ID заявки"
+
+        client = get_sheets_client()
+        if not client:
+            return False, "Не вдалося створити клієнт Google Sheets"
+
+        spreadsheet_id = os.getenv("GOOGLE_SPREADSHEET_ID")
+        worksheet_name = os.getenv("GOOGLE_WORKSHEET_NAME", "ЗАЯВКА")
+
+        if not spreadsheet_id:
+            return False, "GOOGLE_SPREADSHEET_ID не задано"
+
+        spreadsheet = client.open_by_key(spreadsheet_id)
+        worksheet = spreadsheet.worksheet(worksheet_name)
+
+        headers = worksheet.row_values(1)
+        if not headers:
+            return False, "У таблиці порожній рядок заголовків"
+
+        header_map = {h.strip(): idx for idx, h in enumerate(headers) if h and h.strip()}
+        id_idx = header_map.get("ID заявки")
+        status_idx = header_map.get("Статус")
+
+        if id_idx is None:
+            return False, "У таблиці немає колонки 'ID заявки'"
+        if status_idx is None:
+            return False, "У таблиці немає колонки 'Статус'"
+
+        id_column_values = worksheet.col_values(id_idx + 1)
+        normalized_request_id = request_id.strip().upper()
+
+        matched_row = None
+        for row_number in range(2, len(id_column_values) + 1):
+            row_id = (id_column_values[row_number - 1] or "").strip().upper()
+            if row_id == normalized_request_id:
+                matched_row = row_number
+                break
+
+        if not matched_row:
+            return False, f"Заявку з ID '{request_id}' не знайдено"
+
+        current_status = (worksheet.cell(matched_row, status_idx + 1).value or "").strip().upper()
+        if current_status == "АКТИВНА":
+            return True, f"Заявка {request_id} вже має статус АКТИВНА"
+
+        worksheet.update_cell(matched_row, status_idx + 1, "АКТИВНА")
+
+        comment_idx = header_map.get("Коментар відновлення")
+        if comment_idx is not None:
+            kyiv_tz = pytz.timezone('Europe/Kyiv')
+            timestamp = datetime.now(kyiv_tz).strftime("%d.%m.%Y %H:%M")
+            by_text = restored_by.strip() if restored_by else "Невідомий користувач"
+            worksheet.update_cell(matched_row, comment_idx + 1, f"{timestamp} | {by_text}")
+
+        return True, f"Заявка {request_id} відновлена (статус: АКТИВНА)"
+
+    except Exception as e:
+        logger.error(f"Error restoring request: {e}")
+        return False, f"Помилка при відновленні заявки: {e}"
