@@ -606,6 +606,7 @@ async def handle_start_menu_choice(update: Update, context: ContextTypes.DEFAULT
                 context.user_data.update(request.get("request_data", {}))
                 context.user_data["request_id"] = request_id
                 context.user_data["editing_mode"] = True
+                context.user_data["is_request_edit"] = True
                 
                 # Показати меню полів для редагування
                 return await show_edit_fields(update, context)
@@ -1863,7 +1864,7 @@ async def confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         notification = f"📋 {user_mention} створив нову заявку:\n🆔 ID заявки: {request_id}\n\n{application_text}"
         
         # Перевірити чи це редагування існуючої заявки
-        is_editing = context.user_data.get("editing_mode", False)
+        is_editing = context.user_data.get("is_request_edit", False)
         message_id = None
         
         if is_editing:
@@ -2010,6 +2011,7 @@ async def confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
             )
             context.user_data["last_request_id"] = request_id
             context.user_data.pop("editing_mode", None)
+            context.user_data.pop("is_request_edit", None)
             return START
         
         # Для нових заявок - також показати меню редагування/видалення
