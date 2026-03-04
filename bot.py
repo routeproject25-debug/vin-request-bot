@@ -2012,30 +2012,30 @@ async def confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
             context.user_data.pop("editing_mode", None)
             return START
         
-            # Для нових заявок - також показати меню редагування/видалення
-            keyboard = ReplyKeyboardMarkup(
-                [
-                    [KeyboardButton(text="✏️ Редагувати заявку")],
-                    [KeyboardButton(text="🗑️ Видалити заявку")],
-                    [KeyboardButton(text="✅ Готово")],
-                ],
-                resize_keyboard=True,
-                one_time_keyboard=True,
-            )
+        # Для нових заявок - також показати меню редагування/видалення
+        keyboard = ReplyKeyboardMarkup(
+            [
+                [KeyboardButton(text="✏️ Редагувати заявку")],
+                [KeyboardButton(text="🗑️ Видалити заявку")],
+                [KeyboardButton(text="✅ Готово")],
+            ],
+            resize_keyboard=True,
+            one_time_keyboard=True,
+        )
         await update.message.reply_text(
             (
                 f"✅ Заявку надіслано!\n"
                 f"📊 Експорт у Google Sheets: {'успішно' if export_success else '❌ не вдалося'}\n"
                 f"🆔 ID заявки: {request_id}\n\n"
-                    f"Що робити далі?"
+                f"Що робити далі?"
             ),
             reply_markup=keyboard
         )
         
-            # Зберегти ID заявки для наступного меню
-            context.user_data["last_request_id"] = request_id
+        # Зберегти ID заявки для наступного меню
+        context.user_data["last_request_id"] = request_id
         
-            return START
+        return START
 
     await update.message.reply_text("Будь ласка, оберіть ТАК або Почати спочатку.")
     return CONFIRM
