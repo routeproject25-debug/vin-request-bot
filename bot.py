@@ -2,6 +2,7 @@ import os
 import re
 import logging
 import calendar
+import uuid
 import aiohttp
 import pytz
 from typing import Dict, Any, List, Optional, Tuple
@@ -1647,13 +1648,15 @@ async def confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
             )
             return ConversationHandler.END
 
+        request_id = context.user_data.get("request_id") or uuid.uuid4().hex[:8].upper()
+        context.user_data["request_id"] = request_id
         application_text = _format_application(context.user_data)
         thread_id = context.user_data.get("thread_id")
         
         # Додаємо згадку користувача
         user = update.effective_user
         user_mention = f"@{user.username}" if user.username else user.full_name
-        notification = f"📋 {user_mention} створив нову заявку:\n\n{application_text}"
+        notification = f"📋 {user_mention} створив нову заявку:\n🆔 ID заявки: {request_id}\n\n{application_text}"
         
         await context.bot.send_message(
             chat_id=chat_id,
@@ -1695,7 +1698,7 @@ async def confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
             resize_keyboard=True,
         )
         await update.message.reply_text(
-            "✅ Заявку надіслано!",
+            f"✅ Заявку надіслано!\n🆔 ID заявки: {request_id}\n\nЩоб позначити як видалену без входу в таблицю:\n/delete_request {request_id}",
             reply_markup=keyboard
         )
         context.user_data.clear()
@@ -1719,12 +1722,14 @@ async def confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
             )
             return ConversationHandler.END
 
+        request_id = context.user_data.get("request_id") or uuid.uuid4().hex[:8].upper()
+        context.user_data["request_id"] = request_id
         application_text = _format_application(context.user_data)
         
         # Додаємо згадку користувача
         user = update.effective_user
         user_mention = f"@{user.username}" if user.username else user.full_name
-        notification = f"📋 {user_mention} створив нову заявку:\n\n{application_text}"
+        notification = f"📋 {user_mention} створив нову заявку:\n🆔 ID заявки: {request_id}\n\n{application_text}"
         
         await context.bot.send_message(
             chat_id=chat_id,
@@ -1763,7 +1768,7 @@ async def confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
             resize_keyboard=True,
         )
         await update.message.reply_text(
-            "✅ Заявку надіслано!\n\nБажаєте зберегти дані як шаблон для повторного використання?",
+            f"✅ Заявку надіслано!\n🆔 ID заявки: {request_id}\n\nЩоб позначити як видалену без входу в таблицю:\n/delete_request {request_id}\n\nБажаєте зберегти дані як шаблон для повторного використання?",
             reply_markup=keyboard
         )
         context.user_data["pending_save_template"] = True
@@ -1913,6 +1918,26 @@ async def request_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         logging.warning(f"Не вдалося закріпити повідомлення: {e}")
 
 
+async def delete_request_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Позначити заявку як ВИДАЛЕНО в Google Sheets за ID заявки."""
+    if not context.args:
+        await update.message.reply_text(
+            "Використання: /delete_request <ID_заявки>\n"
+            "Приклад: /delete_request A1B2C3D4"
+        )
+        return
+
+    request_id = context.args[0].strip().upper()
+    user = update.effective_user
+    deleted_by = f"@{user.username}" if user and user.username else (user.full_name if user else "Unknown")
+
+    success, message = sheets.mark_request_deleted(request_id, deleted_by=deleted_by)
+    if success:
+        await update.message.reply_text(f"✅ {message}")
+    else:
+        await update.message.reply_text(f"❌ {message}")
+
+
 async def handle_make_request_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Обробка кнопки 📝 Зробити заявку поза ConversationHandler"""
     if update.message.text == "📝 Зробити заявку":
@@ -1960,6 +1985,7 @@ def build_app() -> Application:
 
     app.add_handler(conv)
     app.add_handler(CommandHandler("request", request_button))
+    app.add_handler(CommandHandler("delete_request", delete_request_command))
     return app
 
 
