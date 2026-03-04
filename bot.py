@@ -1666,22 +1666,27 @@ async def confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         
         # Експорт у Google Sheets
         export_success = False
+        export_error = ""
         try:
-            export_success = sheets.export_to_sheets(context.user_data)
+            export_success, export_error = sheets.export_to_sheets(context.user_data)
             if not export_success:
                 # Сповістити адміна про помилку
                 admin_id = os.getenv("ADMIN_USER_ID")
                 if admin_id:
                     user = update.effective_user
                     user_info = f"@{user.username}" if user.username else user.full_name
-                    await context.bot.send_message(
-                        chat_id=admin_id,
-                        text=f"⚠️ Помилка експорту в Google Sheets!\n\n"
-                             f"🆔 ID заявки: {request_id}\n"
-                             f"👤 Користувач: {user_info}\n"
-                             f"📄 Заявка надіслана в чат, але не експортована в таблицю.\n\n"
-                             f"Перевірте логи бота на Railway."
-                    )
+                    try:
+                        await context.bot.send_message(
+                            chat_id=admin_id,
+                            text=f"⚠️ Помилка експорту в Google Sheets!\n\n"
+                                 f"🆔 ID заявки: {request_id}\n"
+                                 f"👤 Користувач: {user_info}\n"
+                                 f"❌ Причина: {export_error or 'невідома'}\n"
+                                 f"📄 Заявка надіслана в чат, але не експортована в таблицю.\n\n"
+                                 f"Перевірте логи бота на Railway."
+                        )
+                    except Exception as notify_error:
+                        logging.error(f"Failed to notify admin about export failure: {notify_error}")
         except Exception as e:
             logging.error(f"Failed to export to Google Sheets: {e}")
             # Сповістити адміна
@@ -1689,14 +1694,17 @@ async def confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
             if admin_id:
                 user = update.effective_user
                 user_info = f"@{user.username}" if user.username else user.full_name
-                await context.bot.send_message(
-                    chat_id=admin_id,
-                    text=f"❌ Критична помилка експорту!\n\n"
-                         f"🆔 ID заявки: {request_id}\n"
-                         f"👤 Користувач: {user_info}\n"
-                         f"❌ Помилка: {str(e)[:200]}\n\n"
-                         f"Перевірте логи Railway."
-                )
+                try:
+                    await context.bot.send_message(
+                        chat_id=admin_id,
+                        text=f"❌ Критична помилка експорту!\n\n"
+                             f"🆔 ID заявки: {request_id}\n"
+                             f"👤 Користувач: {user_info}\n"
+                             f"❌ Помилка: {str(e)[:200]}\n\n"
+                             f"Перевірте логи Railway."
+                    )
+                except Exception as notify_error:
+                    logging.error(f"Failed to notify admin about critical export error: {notify_error}")
         
         # Зберегти контакти для автозаповнення
         try:
@@ -1766,22 +1774,27 @@ async def confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         
         # Експорт у Google Sheets
         export_success = False
+        export_error = ""
         try:
-            export_success = sheets.export_to_sheets(context.user_data)
+            export_success, export_error = sheets.export_to_sheets(context.user_data)
             if not export_success:
                 # Сповістити адміна про помилку
                 admin_id = os.getenv("ADMIN_USER_ID")
                 if admin_id:
                     user = update.effective_user
                     user_info = f"@{user.username}" if user.username else user.full_name
-                    await context.bot.send_message(
-                        chat_id=admin_id,
-                        text=f"⚠️ Помилка експорту в Google Sheets!\n\n"
-                             f"🆔 ID заявки: {request_id}\n"
-                             f"👤 Користувач: {user_info}\n"
-                             f"📄 Заявка надіслана в чат, але не експортована в таблицю.\n\n"
-                             f"Перевірте логи бота на Railway."
-                    )
+                    try:
+                        await context.bot.send_message(
+                            chat_id=admin_id,
+                            text=f"⚠️ Помилка експорту в Google Sheets!\n\n"
+                                 f"🆔 ID заявки: {request_id}\n"
+                                 f"👤 Користувач: {user_info}\n"
+                                 f"❌ Причина: {export_error or 'невідома'}\n"
+                                 f"📄 Заявка надіслана в чат, але не експортована в таблицю.\n\n"
+                                 f"Перевірте логи бота на Railway."
+                        )
+                    except Exception as notify_error:
+                        logging.error(f"Failed to notify admin about export failure: {notify_error}")
         except Exception as e:
             logging.error(f"Failed to export to Google Sheets: {e}")
             # Сповістити адміна
@@ -1789,14 +1802,17 @@ async def confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
             if admin_id:
                 user = update.effective_user
                 user_info = f"@{user.username}" if user.username else user.full_name
-                await context.bot.send_message(
-                    chat_id=admin_id,
-                    text=f"❌ Критична помилка експорту!\n\n"
-                         f"🆔 ID заявки: {request_id}\n"
-                         f"👤 Користувач: {user_info}\n"
-                         f"❌ Помилка: {str(e)[:200]}\n\n"
-                         f"Перевірте логи Railway."
-                )
+                try:
+                    await context.bot.send_message(
+                        chat_id=admin_id,
+                        text=f"❌ Критична помилка експорту!\n\n"
+                             f"🆔 ID заявки: {request_id}\n"
+                             f"👤 Користувач: {user_info}\n"
+                             f"❌ Помилка: {str(e)[:200]}\n\n"
+                             f"Перевірте логи Railway."
+                    )
+                except Exception as notify_error:
+                    logging.error(f"Failed to notify admin about critical export error: {notify_error}")
         
         # Зберегти контакти для автозаповнення
         try:

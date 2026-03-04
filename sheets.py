@@ -95,7 +95,7 @@ def get_sheets_client():
         return None
 
 
-def export_to_sheets(data: Dict[str, Any]) -> bool:
+def export_to_sheets(data: Dict[str, Any]) -> Tuple[bool, str]:
     """
     Експортувати заявку в Google Sheets
     
@@ -128,16 +128,18 @@ def export_to_sheets(data: Dict[str, Any]) -> bool:
         
         client = get_sheets_client()
         if not client:
-            logger.error("Failed to get Google Sheets client")
-            return False
+            error_msg = "Не вдалося створити Google Sheets client"
+            logger.error(error_msg)
+            return False, error_msg
         logger.info("✓ Google Sheets client created")
         
         spreadsheet_id = os.getenv("GOOGLE_SPREADSHEET_ID")
         worksheet_name = os.getenv("GOOGLE_WORKSHEET_NAME", "ЗАЯВКА")
         
         if not spreadsheet_id:
-            logger.error("GOOGLE_SPREADSHEET_ID not set")
-            return False
+            error_msg = "GOOGLE_SPREADSHEET_ID не задано"
+            logger.error(error_msg)
+            return False, error_msg
         
         logger.info(f"Opening spreadsheet: {spreadsheet_id}, worksheet: {worksheet_name}")
         
@@ -208,8 +210,9 @@ def export_to_sheets(data: Dict[str, Any]) -> bool:
         logger.debug(f"Headers: {headers}")
         
         if not headers:
-            logger.error(f"Sheet '{worksheet_name}' has empty header row")
-            return False
+            error_msg = f"Аркуш '{worksheet_name}' має порожній рядок заголовків"
+            logger.error(error_msg)
+            return False, error_msg
         
         header_map = {h.strip(): idx for idx, h in enumerate(headers) if h and h.strip()}
         logger.info(f"✓ Header map created with {len(header_map)} entries")
@@ -254,13 +257,13 @@ def export_to_sheets(data: Dict[str, Any]) -> bool:
         worksheet.append_row(row, value_input_option='USER_ENTERED')
         
         logger.info(f"✅ Successfully exported request to Google Sheets (spreadsheet: {spreadsheet_id})")
-        return True
+        return True, ""
         
     except Exception as e:
         import traceback
         logger.error(f"❌ Error exporting to Google Sheets: {e}")
         logger.error(f"Full traceback:\n{traceback.format_exc()}")
-        return False
+        return False, str(e)
 
 
 def mark_request_deleted(request_id: str, deleted_by: str = "") -> Tuple[bool, str]:
