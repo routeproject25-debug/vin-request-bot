@@ -425,7 +425,7 @@ def mark_request_as_deleted(request_id: str) -> bool:
 
 
 def get_user_requests(user_id: int, limit: int = 50) -> List[Dict[str, Any]]:
-    """Отримати всі заявки користувача"""
+    """Отримати всі заявки користувача (окрім видалених)"""
     try:
         conn = get_connection()
         cursor = conn.cursor(cursor_factory=RealDictCursor)
@@ -433,7 +433,7 @@ def get_user_requests(user_id: int, limit: int = 50) -> List[Dict[str, Any]]:
         cursor.execute(
             """
             SELECT * FROM requests 
-            WHERE user_id = %s
+            WHERE user_id = %s AND (status IS NULL OR status != 'ВИДАЛЕНО')
             ORDER BY created_at DESC
             LIMIT %s
             """,

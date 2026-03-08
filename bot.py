@@ -604,10 +604,13 @@ async def handle_start_menu_choice(update: Update, context: ContextTypes.DEFAULT
             request = db.get_request(request_id)
             if request:
                 # Відновити дані заявки в context
-                context.user_data.update(request.get("request_data", {}))
+                request_data = request.get("request_data", {})
+                context.user_data.update(request_data)
                 context.user_data["request_id"] = request_id
                 context.user_data["editing_mode"] = True
                 context.user_data["is_request_edit"] = True
+                # Зберегти оригінальні дані для порівняння після редагування
+                context.user_data["original_request_data"] = dict(request_data)
                 
                 # Показати меню полів для редагування
                 return await show_edit_fields(update, context)
@@ -1712,6 +1715,37 @@ async def handle_edit_choice(update: Update, context: ContextTypes.DEFAULT_TYPE)
     return EDIT
 
 
+def _get_changes_text(original_data: dict, new_data: dict) -> str:
+    """Створити текст з переліком змін між оригінальними та новими даними."""
+    changes = []
+    
+    # Список полів для відстеження з їх описами
+    field_labels = {
+        "initiator": "👤 Ініціатор",
+        "company": "🏢 Підприємство",
+        "cargo_type": "📦 Вантаж",
+        "vehicle_type": "🚛 Тип авто",
+        "load_city": "📍 Завантаження",
+        "unload_city": "📍 Розвантаження",
+        "date": "📅 Дата",
+        "load_contact": "📞 Контакт (завантаження)",
+        "unload_contact": "📞 Контакт (розвантаження)",
+        "comment": "💬 Коментар",
+    }
+    
+    for field, label in field_labels.items():
+        old_val = original_data.get(field, "—")
+        new_val = new_data.get(field, "—")
+        
+        if old_val != new_val:
+            changes.append(f"{label}: {old_val} → {new_val}")
+    
+    if changes:
+        return "✏️ Зміни:\n" + "\n".join(changes)
+    else:
+        return "✏️ Заявку відредаговано"
+
+
 async def confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     text = (update.message.text or "").strip()
 
@@ -1896,6 +1930,20 @@ async def confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
                             text=notification,
                         )
                         logging.info(f"Updated message {message_id} for request {request_id}")
+                        
+                        # Відправити повідомлення про зміни
+                        original_data = context.user_data.get("original_request_data", {})
+                        if original_data:
+                            changes_text = _get_changes_text(original_data, context.user_data)
+                            try:
+                                await context.bot.send_message(
+                                    chat_id=chat_id,
+                                    text=f"🆔 Заявка {request_id}\n{changes_text}",
+                                    message_thread_id=thread_id,
+                                    reply_to_message_id=message_id,
+                                )
+                            except Exception as e:
+                                logging.error(f"Failed to send changes notification: {e}")
                     else:
                         # Якщо message_id немає - надіслати як нове
                         message = await context.bot.send_message(
@@ -2273,6 +2321,9 @@ async def my_requests_command(update: Update, context: ContextTypes.DEFAULT_TYPE
             [
                 InlineKeyboardButton(text="✏️ Редагувати", callback_data=f"REQACT:EDIT:{rid}"),
                 InlineKeyboardButton(text="🗑️ Видалити", callback_data=f"REQACT:DEL:{rid}"),
+            ],
+            [
+                InlineKeyboardButton(text="📋 Копія заявки", callback_data=f"REQACT:COPY:{rid}"),
             ]
         ])
         await update.message.reply_text(info_text, reply_markup=keyboard)
@@ -2326,6 +2377,8 @@ async def handle_request_action_callback(update: Update, context: ContextTypes.D
         context.user_data["last_request_id"] = request_id
         context.user_data["editing_mode"] = True
         context.user_data["is_request_edit"] = True
+        # Зберегти оригінальні дані для порівняння після редагування
+        context.user_data["original_request_data"] = dict(request_data)
 
         await query.message.reply_text(f"✏️ Відкрив заявку {request_id} для редагування")
         fake_update = type('obj', (object,), {'message': query.message, 'effective_user': update.effective_user})()
@@ -2360,6 +2413,33 @@ async def handle_request_action_callback(update: Update, context: ContextTypes.D
         context.user_data.clear()
         fake_update = type('obj', (object,), {'message': query.message, 'effective_user': update.effective_user})()
         return await show_start_menu(fake_update, context)
+
+    if action == "COPY":
+        # Створити копію заявки з новим ID
+        request_data = request.get("request_data") or {}
+        if not isinstance(request_data, dict):
+            await query.answer("Дані заявки пошкоджені", show_alert=True)
+            return START
+
+        # Згенерувати новий ID для копії
+        new_request_id = uuid.uuid4().hex[:8].upper()
+        
+        # Очистити context і завантажити дані
+        context.user_data.clear()
+        context.user_data.update(request_data)
+        context.user_data["request_id"] = new_request_id
+        context.user_data["last_request_id"] = new_request_id
+        # НЕ встановлюємо editing_mode та is_request_edit - це нова заявка
+        
+        await query.message.reply_text(
+            f"📋 Створено копію заявки {request_id}\n"
+            f"🆔 Новий ID: {new_request_id}\n\n"
+            f"Можете відредагувати дані або одразу підтвердити."
+        )
+        
+        # Показати підтвердження з можливістю редагування
+        fake_update = type('obj', (object,), {'message': query.message, 'effective_user': update.effective_user})()
+        return await ask_question(fake_update, context)
 
     await query.answer("Невідома дія", show_alert=True)
     return START
@@ -2403,6 +2483,8 @@ async def edit_request_command(update: Update, context: ContextTypes.DEFAULT_TYP
     context.user_data["last_request_id"] = request_id
     context.user_data["editing_mode"] = True
     context.user_data["is_request_edit"] = True
+    # Зберегти оригінальні дані для порівняння після редагування
+    context.user_data["original_request_data"] = dict(request_data)
 
     await update.message.reply_text(f"✏️ Відкрив заявку {request_id} для редагування")
     return await show_edit_fields(update, context)
