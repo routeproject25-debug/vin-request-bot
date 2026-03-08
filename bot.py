@@ -2332,7 +2332,7 @@ async def my_requests_command(update: Update, context: ContextTypes.DEFAULT_TYPE
         "Можна також вручну: /edit_request ID_ЗАЯВКИ",
         reply_markup=ReplyKeyboardRemove()
     )
-    return START
+    return ConversationHandler.END
 
 
 async def handle_request_action_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -2434,12 +2434,21 @@ async def handle_request_action_callback(update: Update, context: ContextTypes.D
         await query.message.reply_text(
             f"📋 Створено копію заявки {request_id}\n"
             f"🆔 Новий ID: {new_request_id}\n\n"
-            f"Можете відредагувати дані або одразу підтвердити."
+            f"Дані копійованої заявки завантажені. Можете:"
         )
         
-        # Показати підтвердження з можливістю редагування
-        fake_update = type('obj', (object,), {'message': query.message, 'effective_user': update.effective_user})()
-        return await ask_question(fake_update, context)
+        # Показати меню підтвердження для копійованої заявки
+        application_text = _format_application(context.user_data)
+        keyboard = ReplyKeyboardMarkup(
+            [[KeyboardButton(text="ТАК")], [KeyboardButton(text="✏️ Редагувати поля")]],
+            resize_keyboard=True,
+            one_time_keyboard=True,
+        )
+        await query.message.reply_text(
+            "Перевірте заявку:\n\n" + application_text + "\n\nНадіслати заявку в чат?",
+            reply_markup=keyboard,
+        )
+        return CONFIRM
 
     await query.answer("Невідома дія", show_alert=True)
     return START
