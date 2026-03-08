@@ -2536,7 +2536,8 @@ def build_app() -> Application:
             CommandHandler("start", start),
             CommandHandler("my_requests", my_requests_command),
             CommandHandler("edit_request", edit_request_command),
-            MessageHandler(filters.Regex("^📝 (Зробити заявку|Нова заявка)$"), start),
+            CallbackQueryHandler(handle_request_action_callback, pattern=r"^REQACT:"),
+            MessageHandler(filters.Regex("^📝 Зробити заявку$"), start),
         ],
         states={
             START: [
@@ -2627,12 +2628,10 @@ def build_app() -> Application:
     )
 
     app.add_handler(conv)
+    app.add_handler(CommandHandler("cancel", cancel))
     app.add_handler(CommandHandler("request", request_button))
     app.add_handler(CommandHandler("delete_request", delete_request_command))
     app.add_handler(CommandHandler("restore_request", restore_request_command))
-    app.add_handler(CommandHandler("my_requests", my_requests_command))
-    app.add_handler(CommandHandler("edit_request", edit_request_command))
-    app.add_handler(CallbackQueryHandler(handle_request_action_callback, pattern=r"^REQACT:"))
     return app
 
 
