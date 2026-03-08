@@ -2429,6 +2429,7 @@ async def handle_request_action_callback(update: Update, context: ContextTypes.D
         context.user_data.update(request_data)
         context.user_data["request_id"] = new_request_id
         context.user_data["last_request_id"] = new_request_id
+        context.user_data["question_index"] = len(QUESTIONS)  # Встановити індекс на кінець для CONFIRM
         # НЕ встановлюємо editing_mode та is_request_edit - це нова заявка
         
         await query.message.reply_text(
@@ -2527,24 +2528,78 @@ def build_app() -> Application:
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_start_menu_choice),
                 CallbackQueryHandler(handle_request_action_callback, pattern=r"^REQACT:"),
             ],
-            LOAD_TEMPLATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_start_menu_choice)],
-            TEMPLATE_SELECT: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_template_select)],
-            DELETE_TEMPLATE_CONFIRM: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_delete_template_confirm)],
-            DEPARTMENT: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_department)],
-            QUESTION: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_answer)],
-            CUSTOM_INPUT: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_custom_input)],
-            CROP_TYPE: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_crop_type)],
-            DATE_TYPE: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_date_type)],
-            DATE_CALENDAR: [CallbackQueryHandler(handle_calendar)],
-            DATE_PERIOD_END: [CallbackQueryHandler(handle_period_end)],
-            CITY_SEARCH_LOAD: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_city_search_load)],
-            CITY_SELECT_LOAD: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_city_select_load)],
-            CITY_SEARCH_UNLOAD: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_city_search_unload)],
-            CITY_SELECT_UNLOAD: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_city_select_unload)],
-            CONFIRM: [MessageHandler(filters.TEXT & ~filters.COMMAND, confirm)],
-            EDIT: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_edit_choice)],
-            SAVE_TEMPLATE_CONFIRM: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_save_template_response)],
-            SAVE_TEMPLATE_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_save_template_name)],
+            LOAD_TEMPLATE: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_start_menu_choice),
+                CommandHandler("cancel", cancel),
+            ],
+            TEMPLATE_SELECT: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_template_select),
+                CommandHandler("cancel", cancel),
+            ],
+            DELETE_TEMPLATE_CONFIRM: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_delete_template_confirm),
+                CommandHandler("cancel", cancel),
+            ],
+            DEPARTMENT: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_department),
+                CommandHandler("cancel", cancel),
+            ],
+            QUESTION: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_answer),
+                CommandHandler("cancel", cancel),
+            ],
+            CUSTOM_INPUT: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_custom_input),
+                CommandHandler("cancel", cancel),
+            ],
+            CROP_TYPE: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_crop_type),
+                CommandHandler("cancel", cancel),
+            ],
+            DATE_TYPE: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_date_type),
+                CommandHandler("cancel", cancel),
+            ],
+            DATE_CALENDAR: [
+                CallbackQueryHandler(handle_calendar),
+                CommandHandler("cancel", cancel),
+            ],
+            DATE_PERIOD_END: [
+                CallbackQueryHandler(handle_period_end),
+                CommandHandler("cancel", cancel),
+            ],
+            CITY_SEARCH_LOAD: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_city_search_load),
+                CommandHandler("cancel", cancel),
+            ],
+            CITY_SELECT_LOAD: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_city_select_load),
+                CommandHandler("cancel", cancel),
+            ],
+            CITY_SEARCH_UNLOAD: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_city_search_unload),
+                CommandHandler("cancel", cancel),
+            ],
+            CITY_SELECT_UNLOAD: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_city_select_unload),
+                CommandHandler("cancel", cancel),
+            ],
+            CONFIRM: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, confirm),
+                CommandHandler("cancel", cancel),
+            ],
+            EDIT: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_edit_choice),
+                CommandHandler("cancel", cancel),
+            ],
+            SAVE_TEMPLATE_CONFIRM: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_save_template_response),
+                CommandHandler("cancel", cancel),
+            ],
+            SAVE_TEMPLATE_NAME: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_save_template_name),
+                CommandHandler("cancel", cancel),
+            ],
         },
         fallbacks=[
             CommandHandler("cancel", cancel),
