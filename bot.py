@@ -2460,6 +2460,9 @@ def build_app() -> Application:
             CommandHandler("my_requests", my_requests_command),
             CommandHandler("edit_request", edit_request_command),
         ],
+        allow_reentry=True,
+        per_user=True,
+        per_chat=True,
     )
 
     app.add_handler(conv)
