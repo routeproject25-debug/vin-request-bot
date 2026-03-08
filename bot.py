@@ -2421,6 +2421,11 @@ async def handle_request_action_callback(update: Update, context: ContextTypes.D
             await query.answer("Дані заявки пошкоджені", show_alert=True)
             return START
 
+        user = update.effective_user
+        if not user:
+            await query.answer("Не вдалося отримати дані користувача", show_alert=True)
+            return START
+
         # Згенерувати новий ID для копії
         new_request_id = uuid.uuid4().hex[:8].upper()
         
@@ -2429,26 +2434,36 @@ async def handle_request_action_callback(update: Update, context: ContextTypes.D
         context.user_data.update(request_data)
         context.user_data["request_id"] = new_request_id
         context.user_data["last_request_id"] = new_request_id
-        context.user_data["question_index"] = len(QUESTIONS)  # Встановити індекс на кінець для CONFIRM
-        # НЕ встановлюємо editing_mode та is_request_edit - це нова заявка
+        # НЕ встановлюємо question_index та editing_mode - це нова заявка
         
-        await query.message.reply_text(
-            f"📋 Створено копію заявки {request_id}\n"
-            f"🆔 Новий ID: {new_request_id}\n\n"
-            f"Дані копійованої заявки завантажені. Можете:"
-        )
+        try:
+            # Відправити копію у приватний чат користувача
+            msg = await context.bot.send_message(
+                chat_id=user.id,
+                text=f"📋 Створено копію заявки {request_id}\n"
+                     f"🆔 Новий ID заявки: {new_request_id}\n\n"
+                     f"Дані завантажені. Перевірте та підтвердіть:"
+            )
+            
+            # Показати меню підтвердження для копійованої заявки
+            application_text = _format_application(context.user_data)
+            keyboard = ReplyKeyboardMarkup(
+                [[KeyboardButton(text="ТАК")], [KeyboardButton(text="✏️ Редагувати поля")]],
+                resize_keyboard=True,
+                one_time_keyboard=True,
+            )
+            await context.bot.send_message(
+                chat_id=user.id,
+                text="Перевірте заявку:\n\n" + application_text + "\n\nНадіслати заявку в чат?",
+                reply_markup=keyboard,
+            )
+            
+            await query.answer("📋 Копія відправлена у приватний чат")
+        except Exception as e:
+            logging.error(f"Failed to send copy to user DM: {e}")
+            await query.answer("❌ Не вдалося відправити копію", show_alert=True)
+            return START
         
-        # Показати меню підтвердження для копійованої заявки
-        application_text = _format_application(context.user_data)
-        keyboard = ReplyKeyboardMarkup(
-            [[KeyboardButton(text="ТАК")], [KeyboardButton(text="✏️ Редагувати поля")]],
-            resize_keyboard=True,
-            one_time_keyboard=True,
-        )
-        await query.message.reply_text(
-            "Перевірте заявку:\n\n" + application_text + "\n\nНадіслати заявку в чат?",
-            reply_markup=keyboard,
-        )
         return CONFIRM
 
     await query.answer("Невідома дія", show_alert=True)
