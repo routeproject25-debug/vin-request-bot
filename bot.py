@@ -2426,65 +2426,48 @@ def build_app() -> Application:
 
     conv = ConversationHandler(
         entry_points=[
-            CommandHandler("start", start, filters=filters.PRIVATE),
-            CommandHandler("my_requests", my_requests_command, filters=filters.PRIVATE),
-            CommandHandler("edit_request", edit_request_command, filters=filters.PRIVATE),
-            MessageHandler(filters.PRIVATE & filters.TEXT & filters.Regex("^📝 (Зробити заявку|Нова заявка)$"), start),
+            CommandHandler("start", start),
+            CommandHandler("my_requests", my_requests_command),
+            CommandHandler("edit_request", edit_request_command),
+            MessageHandler(filters.Regex("^📝 (Зробити заявку|Нова заявка)$"), start),
         ],
         states={
             START: [
-                MessageHandler(filters.PRIVATE & filters.TEXT & ~filters.COMMAND, handle_start_menu_choice),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_start_menu_choice),
                 CallbackQueryHandler(handle_request_action_callback, pattern=r"^REQACT:"),
             ],
-            LOAD_TEMPLATE: [MessageHandler(filters.PRIVATE & filters.TEXT & ~filters.COMMAND, handle_start_menu_choice)],
-            TEMPLATE_SELECT: [MessageHandler(filters.PRIVATE & filters.TEXT & ~filters.COMMAND, handle_template_select)],
-            DELETE_TEMPLATE_CONFIRM: [MessageHandler(filters.PRIVATE & filters.TEXT & ~filters.COMMAND, handle_delete_template_confirm)],
-            DEPARTMENT: [MessageHandler(filters.PRIVATE & filters.TEXT & ~filters.COMMAND, handle_department)],
-            QUESTION: [MessageHandler(filters.PRIVATE & filters.TEXT & ~filters.COMMAND, handle_answer)],
-            CUSTOM_INPUT: [MessageHandler(filters.PRIVATE & filters.TEXT & ~filters.COMMAND, handle_custom_input)],
-            CROP_TYPE: [MessageHandler(filters.PRIVATE & filters.TEXT & ~filters.COMMAND, handle_crop_type)],
-            DATE_TYPE: [MessageHandler(filters.PRIVATE & filters.TEXT & ~filters.COMMAND, handle_date_type)],
+            LOAD_TEMPLATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_start_menu_choice)],
+            TEMPLATE_SELECT: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_template_select)],
+            DELETE_TEMPLATE_CONFIRM: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_delete_template_confirm)],
+            DEPARTMENT: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_department)],
+            QUESTION: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_answer)],
+            CUSTOM_INPUT: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_custom_input)],
+            CROP_TYPE: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_crop_type)],
+            DATE_TYPE: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_date_type)],
             DATE_CALENDAR: [CallbackQueryHandler(handle_calendar)],
             DATE_PERIOD_END: [CallbackQueryHandler(handle_period_end)],
-            CITY_SEARCH_LOAD: [MessageHandler(filters.PRIVATE & filters.TEXT & ~filters.COMMAND, handle_city_search_load)],
-            CITY_SELECT_LOAD: [MessageHandler(filters.PRIVATE & filters.TEXT & ~filters.COMMAND, handle_city_select_load)],
-            CITY_SEARCH_UNLOAD: [MessageHandler(filters.PRIVATE & filters.TEXT & ~filters.COMMAND, handle_city_search_unload)],
-            CITY_SELECT_UNLOAD: [MessageHandler(filters.PRIVATE & filters.TEXT & ~filters.COMMAND, handle_city_select_unload)],
-            CONFIRM: [MessageHandler(filters.PRIVATE & filters.TEXT & ~filters.COMMAND, confirm)],
-            EDIT: [MessageHandler(filters.PRIVATE & filters.TEXT & ~filters.COMMAND, handle_edit_choice)],
-            SAVE_TEMPLATE_CONFIRM: [MessageHandler(filters.PRIVATE & filters.TEXT & ~filters.COMMAND, handle_save_template_response)],
-            SAVE_TEMPLATE_NAME: [MessageHandler(filters.PRIVATE & filters.TEXT & ~filters.COMMAND, handle_save_template_name)],
+            CITY_SEARCH_LOAD: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_city_search_load)],
+            CITY_SELECT_LOAD: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_city_select_load)],
+            CITY_SEARCH_UNLOAD: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_city_search_unload)],
+            CITY_SELECT_UNLOAD: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_city_select_unload)],
+            CONFIRM: [MessageHandler(filters.TEXT & ~filters.COMMAND, confirm)],
+            EDIT: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_edit_choice)],
+            SAVE_TEMPLATE_CONFIRM: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_save_template_response)],
+            SAVE_TEMPLATE_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_save_template_name)],
         },
         fallbacks=[
-            CommandHandler("cancel", cancel, filters=filters.PRIVATE),
-            CommandHandler("my_requests", my_requests_command, filters=filters.PRIVATE),
-            CommandHandler("edit_request", edit_request_command, filters=filters.PRIVATE),
+            CommandHandler("cancel", cancel),
+            CommandHandler("my_requests", my_requests_command),
+            CommandHandler("edit_request", edit_request_command),
         ],
     )
 
     app.add_handler(conv)
-    
-    # Обробник для /start-команды з групових чатів
-    async def start_from_group(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Обробка /start з групового чату - спрямувати в приватний чат"""
-        user = update.effective_user
-        if user:
-            try:
-                # Надіслати привіт у приватний чат
-                await context.bot.send_message(
-                    chat_id=user.id,
-                    text="📝 Привіт! Давайте створимо нову заявку у приватному чаті.",
-                )
-            except Exception as e:
-                logging.error(f"Failed to send DM to user {user.id}: {e}")
-    
-    app.add_handler(CommandHandler("start", start_from_group, filters=~filters.PRIVATE))
-    
     app.add_handler(CommandHandler("request", request_button))
     app.add_handler(CommandHandler("delete_request", delete_request_command))
     app.add_handler(CommandHandler("restore_request", restore_request_command))
-    app.add_handler(CommandHandler("my_requests", my_requests_command, filters=filters.PRIVATE))
-    app.add_handler(CommandHandler("edit_request", edit_request_command, filters=filters.PRIVATE))
+    app.add_handler(CommandHandler("my_requests", my_requests_command))
+    app.add_handler(CommandHandler("edit_request", edit_request_command))
     app.add_handler(CallbackQueryHandler(handle_request_action_callback, pattern=r"^REQACT:"))
     return app
 
