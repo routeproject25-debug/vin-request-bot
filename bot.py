@@ -456,7 +456,7 @@ async def show_start_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         "Що робитимемо?",
         reply_markup=keyboard
     )
-    return LOAD_TEMPLATE
+    return START
 
 
 async def show_templates_list(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -2437,7 +2437,7 @@ async def handle_request_action_callback(update: Update, context: ContextTypes.D
         # НЕ встановлюємо question_index та editing_mode - це нова заявка
         
         try:
-            # Відправити копію у приватний чат користувача
+            # Відправити копію у прива тний чат користувача
             msg = await context.bot.send_message(
                 chat_id=user.id,
                 text=f"📋 Створено копію заявки {request_id}\n"
