@@ -11,6 +11,9 @@ TARGET_CHAT_ID=ваш_chat_id
 BOT_USERNAME=ваш_username
 NOVAPOSHTA_API_KEY=ваш_api_key
 DATABASE_URL=postgresql://... (автоматично створюється Railway)
+
+# Опційно - для сповіщень адміна про помилки експорту
+ADMIN_USER_ID=ваш_telegram_user_id
 ```
 
 ### 2. Google Sheets zmінні (ДОДАТИ)

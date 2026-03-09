@@ -1748,6 +1748,8 @@ def _get_changes_text(original_data: dict, new_data: dict) -> str:
 
 async def confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     text = (update.message.text or "").strip()
+    
+    logging.info(f"confirm() called with text='{text}', is_request_edit={context.user_data.get('is_request_edit')}, request_id={context.user_data.get('request_id')}")
 
     # Швидка заявка - "Додати деталі"
     if text == "✏️ Додати деталі":
@@ -1776,12 +1778,23 @@ async def confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         notification = f"📋 {user_mention} створив нову заявку:\n🆔 ID заявки: {request_id}\n\n{application_text}"
         
         # Надіслати в груповий чат та зберегти message_id
-        message = await context.bot.send_message(
-            chat_id=chat_id,
-            text=notification,
-            message_thread_id=thread_id,
-        )
-        message_id = message.message_id
+        logging.info(f"Quick request: sending {request_id} to chat {chat_id}, thread_id={thread_id}")
+        try:
+            message = await context.bot.send_message(
+                chat_id=chat_id,
+                text=notification,
+                message_thread_id=thread_id,
+            )
+            message_id = message.message_id
+            logging.info(f"✅ Quick request {request_id} sent successfully, message_id={message_id}")
+        except Exception as send_error:
+            logging.error(f"❌ Failed to send quick request {request_id}: {send_error}", exc_info=True)
+            await update.message.reply_text(
+                f"⚠️ Помилка відправки заявки в чат!\n"
+                f"Спробуйте ще раз або зверніться до адміністратора.",
+                reply_markup=ReplyKeyboardRemove()
+            )
+            return ConversationHandler.END
         
         # Зберегти заявку в БД з message_id
         try:
@@ -1963,12 +1976,38 @@ async def confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         else:
             # Нова заявка - надіслати нове повідомлення
             thread_id = context.user_data.get("thread_id")
-            message = await context.bot.send_message(
-                chat_id=chat_id,
-                text=notification,
-                message_thread_id=thread_id,
-            )
-            message_id = message.message_id
+            department = context.user_data.get("department")
+            logging.info(f"Sending new request {request_id} to chat {chat_id}, department={department}, thread_id={thread_id}")
+            logging.debug(f"Request notification text (first 200 chars): {notification[:200]}")
+            try:
+                message = await context.bot.send_message(
+                    chat_id=chat_id,
+                    text=notification,
+                    message_thread_id=thread_id,
+                )
+                message_id = message.message_id
+                logging.info(f"✅ Successfully sent request {request_id} to chat, message_id={message_id}")
+            except Exception as send_error:
+                logging.error(f"❌ Failed to send request {request_id} to chat: {send_error}", exc_info=True)
+                # Спробувати надіслати без thread_id
+                try:
+                    logging.info(f"Attempting to send without thread_id for request {request_id}")
+                    message = await context.bot.send_message(
+                        chat_id=chat_id,
+                        text=notification,
+                    )
+                    message_id = message.message_id
+                    logging.info(f"✅ Sent request {request_id} to chat without thread_id, message_id={message_id}")
+                except Exception as fallback_error:
+                    logging.error(f"❌ Failed to send request {request_id} even without thread_id: {fallback_error}", exc_info=True)
+                    # Повідомити користувача про помилку
+                    await update.message.reply_text(
+                        f"⚠️ Помилка відправки заявки в чат!\n"
+                        f"Заявка збережена в БД та експортована в Sheets, але не надіслана в груповий чат.\n"
+                        f"Зверніться до адміністратора.",
+                        reply_markup=ReplyKeyboardRemove()
+                    )
+                    return ConversationHandler.END
             
             # Зберегти нову заявку в БД
             try:
@@ -1979,6 +2018,7 @@ async def confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
                     message_id=message_id,
                     thread_id=thread_id
                 )
+                logging.info(f"Saved request {request_id} to database")
             except Exception as e:
                 logging.error(f"Error saving request to database: {e}")
         
@@ -2434,7 +2474,27 @@ async def handle_request_action_callback(update: Update, context: ContextTypes.D
         context.user_data.update(request_data)
         context.user_data["request_id"] = new_request_id
         context.user_data["last_request_id"] = new_request_id
-        # НЕ встановлюємо question_index та editing_mode - це нова заявка
+        # Явно встановлюємо що це НЕ редагування - це нова заявка (копія)
+        context.user_data["is_request_edit"] = False
+        context.user_data.pop("editing_mode", None)
+        context.user_data.pop("original_request_data", None)
+        
+        # Перевірка критичних полів
+        copied_thread_id = context.user_data.get("thread_id")
+        copied_department = context.user_data.get("department")
+        logging.info(f"Created copy of request {request_id} with new ID {new_request_id}, department={copied_department}, thread_id={copied_thread_id}")
+        
+        if not copied_department:
+            logging.warning(f"Copy request {new_request_id}: department not found, setting default")
+            # Встановити за замовчуванням якщо немає
+            context.user_data["department"] = "Виробництво"
+            context.user_data["thread_id"] = THREAD_IDS.get("Виробництво")
+            logging.info(f"Set default department=Виробництво, thread_id={context.user_data['thread_id']}")
+        elif copied_thread_id is None:
+            # Якщо department є, але thread_id немає - встановити на основі department
+            logging.warning(f"Copy request {new_request_id}: thread_id is None, setting based on department={copied_department}")
+            context.user_data["thread_id"] = THREAD_IDS.get(copied_department)
+            logging.info(f"Set thread_id={context.user_data['thread_id']} based on department={copied_department}")
         
         try:
             # Відправити копію у прива тний чат користувача
