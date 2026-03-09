@@ -1667,11 +1667,17 @@ async def show_edit_fields(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     department = context.user_data.get("department", "—")
     buttons.append([KeyboardButton(text=f"Запит від: {department}")])
     
+    # Зберегти повні значення для пошуку (буде використано в handle_edit_choice)
+    context.user_data["_field_values_for_edit"] = {}
+    
     for q in QUESTIONS:
         field_value = context.user_data.get(q["key"], "—")
-        # Обмежуємо довжину для кнопки
-        display_value = field_value[:20] + "..." if len(str(field_value)) > 20 else field_value
-        buttons.append([KeyboardButton(text=f"{q['label']}: {display_value}")])
+        # Обмежуємо довжину для кнопки на 55 символів (більше видно, але видно при обрізанні)
+        display_value = field_value[:55] + "..." if len(str(field_value)) > 55 else field_value
+        button_text = f"{q['label']}: {display_value}"
+        buttons.append([KeyboardButton(text=button_text)])
+        # Зберегти повне значення для пошуку
+        context.user_data["_field_values_for_edit"][q["label"]] = field_value
     
     buttons.append([KeyboardButton(text="⬅️ Назад до підтвердження")])
     keyboard = ReplyKeyboardMarkup(buttons, resize_keyboard=True, one_time_keyboard=True)
@@ -1707,8 +1713,13 @@ async def handle_edit_choice(update: Update, context: ContextTypes.DEFAULT_TYPE)
     # Знайти індекс питання за label
     for idx, q in enumerate(QUESTIONS):
         if text.startswith(q["label"]):
+            # Переконатися що використовуємо ПОЛНЕ значення, а не обрізане з кнопки
+            stored_value = context.user_data.get(q["key"], "—")
+            context.user_data[q["key"]] = stored_value  # Переконатися що повна значення збережена
+            
             context.user_data["question_index"] = idx
             context.user_data["editing_mode"] = True
+            logging.debug(f"Editing field {q['label']}, full value: {stored_value[:100]}")
             return await ask_question(update, context)
     
     await update.message.reply_text("Будь ласка, оберіть поле зі списку.")
