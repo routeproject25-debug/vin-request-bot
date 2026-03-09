@@ -1661,26 +1661,38 @@ async def handle_city_select_unload(update: Update, context: ContextTypes.DEFAUL
 
 async def show_edit_fields(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Показує список полів для редагування"""
-    buttons = []
-    
-    # Додати "Запит від:" як перше редаговане поле
-    department = context.user_data.get("department", "—")
-    buttons.append([KeyboardButton(text=f"Запит від: {department}")])
     
     # Зберегти повні значення для пошуку (буде використано в handle_edit_choice)
     context.user_data["_field_values_for_edit"] = {}
     
-    for q in QUESTIONS:
-        field_value = context.user_data.get(q["key"], "—")
-        # Обмежуємо довжину для кнопки на 55 символів (більше видно, але видно при обрізанні)
-        display_value = field_value[:55] + "..." if len(str(field_value)) > 55 else field_value
-        button_text = f"{q['label']}: {display_value}"
-        buttons.append([KeyboardButton(text=button_text)])
-        # Зберегти повне значення для пошуку
-        context.user_data["_field_values_for_edit"][q["label"]] = field_value
+    # Використовуємо inline кнопки замість текстових, щоб уникнути обрізання
+    buttons = []
     
-    buttons.append([KeyboardButton(text="⬅️ Назад до підтвердження")])
-    keyboard = ReplyKeyboardMarkup(buttons, resize_keyboard=True, one_time_keyboard=True)
+    # Кнопка для редагування "Запит від"
+    department = context.user_data.get("department", "—")
+    buttons.append([InlineKeyboardButton(
+        text=f"Запит від: {department}",
+        callback_data="EDIT_FIELD:department"
+    )])
+    
+    for idx, q in enumerate(QUESTIONS):
+        field_value = context.user_data.get(q["key"], "—")
+        # Показувати трохи більше для inline кнопок
+        display_value = field_value[:40] + "…" if len(str(field_value)) > 40 else field_value
+        button_text = f"{q['label']}: {display_value}"
+        buttons.append([InlineKeyboardButton(
+            text=button_text,
+            callback_data=f"EDIT_FIELD:{idx}"  # Передаємо індекс питання
+        )])
+        # Зберегти повне значення для використання
+        context.user_data["_field_values_for_edit"][f"q_{idx}"] = field_value
+    
+    buttons.append([InlineKeyboardButton(
+        text="⬅️ Назад до підтвердження",
+        callback_data="EDIT_CANCEL"
+    )])
+    
+    keyboard = InlineKeyboardMarkup(buttons)
     
     await update.message.reply_text(
         "Оберіть поле для редагування:",
@@ -1690,39 +1702,72 @@ async def show_edit_fields(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
 
 async def handle_edit_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Обробка вибору поля для редагування"""
-    text = (update.message.text or "").strip()
+    """Обробка вибору поля для редагування (callback від inline кнопок)"""
+    query = update.callback_query
+    if not query:
+        return EDIT
     
-    if text == "⬅️ Назад до підтвердження":
-        return await ask_question(update, context)
+    await query.answer()
     
-    # Перевірити, чи редагується "Запит від:"
-    if text.startswith("Запит від:"):
+    data = query.data or ""
+    if not data.startswith("EDIT_FIELD:"):
+        if data == "EDIT_CANCEL":
+            await query.edit_message_text("⬅️ Повернення до підтвердження...")
+            return await ask_question(update, context)
+        return EDIT
+    
+    # Парсимо callback_data
+    field_identifier = data.split(":", 1)[1]
+    
+    # Обробити "Запит від"
+    if field_identifier == "department":
         keyboard = ReplyKeyboardMarkup(
             [[KeyboardButton(text="Тваринництво")], [KeyboardButton(text="Виробництво")]],
             resize_keyboard=True,
             one_time_keyboard=True,
         )
-        await update.message.reply_text(
+        await query.edit_message_text(
             "Запит від:",
             reply_markup=keyboard,
         )
         context.user_data["editing_department"] = True
         return DEPARTMENT
     
-    # Знайти індекс питання за label
-    for idx, q in enumerate(QUESTIONS):
-        if text.startswith(q["label"]):
-            # Переконатися що використовуємо ПОЛНЕ значення, а не обрізане з кнопки
-            stored_value = context.user_data.get(q["key"], "—")
-            context.user_data[q["key"]] = stored_value  # Переконатися що повна значення збережена
-            
+    # Обробити звичайні питання
+    try:
+        idx = int(field_identifier)
+        if 0 <= idx < len(QUESTIONS):
+            q = QUESTIONS[idx]
             context.user_data["question_index"] = idx
             context.user_data["editing_mode"] = True
-            logging.debug(f"Editing field {q['label']}, full value: {stored_value[:100]}")
-            return await ask_question(update, context)
+            logging.info(f"Editing field {q['label']} (index {idx})")
+            
+            # Видалити меню редагування і показати питання
+            try:
+                await query.delete_message()
+            except:
+                pass
+            
+            # Створити fake update для ask_question
+            class FakeMessage:
+                def __init__(self, chat_id, user):
+                    self.chat_id = chat_id
+                    self.message_id = None
+                    self.effective_user = user
+                async def reply_text(self, *args, **kwargs):
+                    return await context.bot.send_message(self.chat_id, *args, **kwargs)
+            
+            fake_update = type('obj', (object,), {
+                'message': FakeMessage(query.message.chat_id, update.effective_user),
+                'effective_user': update.effective_user,
+                'callback_query': None
+            })()
+            
+            return await ask_question(fake_update, context)
+    except (ValueError, IndexError) as e:
+        logging.error(f"Invalid field index: {field_identifier}, error: {e}")
     
-    await update.message.reply_text("Будь ласка, оберіть поле зі списку.")
+    await query.answer("Помилка при виборі поля", show_alert=True)
     return EDIT
 
 
@@ -2676,7 +2721,7 @@ def build_app() -> Application:
                 CommandHandler("cancel", cancel),
             ],
             EDIT: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_edit_choice),
+                CallbackQueryHandler(handle_edit_choice, pattern=r"^EDIT_"),
                 CommandHandler("cancel", cancel),
             ],
             SAVE_TEMPLATE_CONFIRM: [
