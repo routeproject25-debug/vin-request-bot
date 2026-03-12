@@ -1721,13 +1721,20 @@ async def handle_edit_choice(update: Update, context: ContextTypes.DEFAULT_TYPE)
     
     # Обробити "Запит від"
     if field_identifier == "department":
+        current_value = context.user_data.get("department", "—")
         keyboard = ReplyKeyboardMarkup(
             [[KeyboardButton(text="Тваринництво")], [KeyboardButton(text="Виробництво")]],
             resize_keyboard=True,
             one_time_keyboard=True,
         )
         await query.edit_message_text(
-            "Запит від:",
+            f"✏️ Редагування: Запит від\n\n"
+            f"📌 Поточне значення:\n{current_value}\n\n"
+            f"Оберіть нове значення:",
+        )
+        await context.bot.send_message(
+            chat_id=query.message.chat_id,
+            text="Оберіть відділ:",
             reply_markup=keyboard,
         )
         context.user_data["editing_department"] = True
@@ -1738,15 +1745,18 @@ async def handle_edit_choice(update: Update, context: ContextTypes.DEFAULT_TYPE)
         idx = int(field_identifier)
         if 0 <= idx < len(QUESTIONS):
             q = QUESTIONS[idx]
+            current_value = context.user_data.get(q["key"], "—")
+            
             context.user_data["question_index"] = idx
             context.user_data["editing_mode"] = True
-            logging.info(f"Editing field {q['label']} (index {idx})")
+            logging.info(f"Editing field {q['label']} (index {idx}), current value: {current_value[:50] if current_value else '—'}")
             
-            # Видалити меню редагування і показати питання
-            try:
-                await query.delete_message()
-            except:
-                pass
+            # Показати поточне значення перед редагуванням
+            await query.edit_message_text(
+                f"✏️ Редагування: {q['label']}\n\n"
+                f"📌 Поточне значення:\n{current_value}\n\n"
+                f"Введіть нове значення нижче:"
+            )
             
             # Створити fake update для ask_question
             class FakeMessage:
