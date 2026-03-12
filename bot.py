@@ -970,6 +970,12 @@ async def handle_answer(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
             await update.message.delete()
         except:
             pass
+        # В режимі редагування - повернутися до підтвердження
+        if context.user_data.get("editing_mode"):
+            context.user_data.pop("editing_mode", None)
+            context.user_data["question_index"] = len(QUESTIONS)
+            return await ask_question(update, context)
+        # Звичайний режим - попереднє питання
         if index > 0:
             context.user_data["question_index"] = index - 1
             return await ask_question(update, context)
@@ -1310,6 +1316,12 @@ async def handle_date_type(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     text = (update.message.text or "").strip()
     
     if text == "⬅️ Назад":
+        # В режимі редагування - повернутися до підтвердження
+        if context.user_data.get("editing_mode"):
+            context.user_data.pop("editing_mode", None)
+            context.user_data["question_index"] = len(QUESTIONS)
+            return await ask_question(update, context)
+        # Звичайний режим - попереднє питання
         index = context.user_data.get("question_index", 0)
         if index > 0:
             context.user_data["question_index"] = index - 1
@@ -1486,6 +1498,12 @@ async def handle_city_search_load(update: Update, context: ContextTypes.DEFAULT_
     text = (update.message.text or "").strip()
     
     if text == "⬅️ Назад":
+        # В режимі редагування - повернутися до підтвердження
+        if context.user_data.get("editing_mode"):
+            context.user_data.pop("editing_mode", None)
+            context.user_data["question_index"] = len(QUESTIONS)
+            return await ask_question(update, context)
+        # Звичайний режим - попереднє питання
         index = context.user_data.get("question_index", 0)
         if index > 0:
             context.user_data["question_index"] = index - 1
@@ -1525,6 +1543,12 @@ async def handle_city_select_load(update: Update, context: ContextTypes.DEFAULT_
     text = (update.message.text or "").strip()
     
     if text == "⬅️ Назад":
+        # В режимі редагування - повернутися до підтвердження
+        if context.user_data.get("editing_mode"):
+            context.user_data.pop("editing_mode", None)
+            context.user_data["question_index"] = len(QUESTIONS)
+            return await ask_question(update, context)
+        # Звичайний режим - попереднє питання
         index = context.user_data.get("question_index", 0)
         if index > 0:
             context.user_data["question_index"] = index - 1
@@ -1575,6 +1599,12 @@ async def handle_city_search_unload(update: Update, context: ContextTypes.DEFAUL
     text = (update.message.text or "").strip()
     
     if text == "⬅️ Назад":
+        # В режимі редагування - повернутися до підтвердження
+        if context.user_data.get("editing_mode"):
+            context.user_data.pop("editing_mode", None)
+            context.user_data["question_index"] = len(QUESTIONS)
+            return await ask_question(update, context)
+        # Звичайний режим - попереднє питання
         index = context.user_data.get("question_index", 0)
         if index > 0:
             context.user_data["question_index"] = index - 1
@@ -1614,6 +1644,12 @@ async def handle_city_select_unload(update: Update, context: ContextTypes.DEFAUL
     text = (update.message.text or "").strip()
     
     if text == "⬅️ Назад":
+        # В режимі редагування - повернутися до підтвердження
+        if context.user_data.get("editing_mode"):
+            context.user_data.pop("editing_mode", None)
+            context.user_data["question_index"] = len(QUESTIONS)
+            return await ask_question(update, context)
+        # Звичайний режим - попереднє питання
         index = context.user_data.get("question_index", 0)
         if index > 0:
             context.user_data["question_index"] = index - 1
