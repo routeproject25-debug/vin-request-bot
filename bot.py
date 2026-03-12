@@ -187,13 +187,13 @@ QUESTIONS: List[Dict[str, Any]] = [
         "key": "unload_method",
         "label": "Спосіб розвантаження",
         "prompt": "Спосіб розвантаження:",
-        "options": None,
+        "options": ["Пропустити"],
     },
     {
         "key": "unload_contact",
         "label": "Контакт на розвантаженні",
         "prompt": "Контакт на розвантаженні (приклад: Іванов Іван 0000000000):",
-        "options": None,
+        "options": ["Пропустити"],
     },
 ]
 
