@@ -1823,21 +1823,37 @@ def _get_changes_text(original_data: dict, new_data: dict) -> str:
     
     # Список полів для відстеження з їх описами
     field_labels = {
+        "department": "🏷️ Запит від",
+        "vehicle_type": "🚛 Тип авто",
         "initiator": "👤 Ініціатор",
         "company": "🏢 Підприємство",
         "cargo_type": "📦 Вантаж",
-        "vehicle_type": "🚛 Тип авто",
+        "size_type": "📐 Габарит / негабарит",
+        "big_bag_weight": "⚖️ Вага 1 біг-бегу",
+        "volume": "📊 Обсяг",
+        "notes": "💬 Примітки",
+        "date_period": "📅 Дата / період",
         "load_city": "📍 Завантаження",
+        "load_place": "🏭 Склад завантаження",
+        "load_method": "⬆️ Спосіб завантаження",
         "unload_city": "📍 Розвантаження",
-        "date": "📅 Дата",
+        "unload_place": "🏭 Склад розвантаження",
+        "unload_method": "⬇️ Спосіб розвантаження",
         "load_contact": "📞 Контакт (завантаження)",
         "unload_contact": "📞 Контакт (розвантаження)",
-        "comment": "💬 Коментар",
     }
+
+    def normalize_value(value: Any) -> str:
+        if value is None:
+            return "—"
+        if isinstance(value, str):
+            cleaned = value.strip()
+            return cleaned if cleaned else "—"
+        return str(value)
     
     for field, label in field_labels.items():
-        old_val = original_data.get(field, "—")
-        new_val = new_data.get(field, "—")
+        old_val = normalize_value(original_data.get(field))
+        new_val = normalize_value(new_data.get(field))
         
         if old_val != new_val:
             changes.append(f"{label}: {old_val} → {new_val}")
@@ -2030,12 +2046,18 @@ async def confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         message_id = None
         
         if is_editing:
+            thread_id = context.user_data.get("thread_id")
+            original_data = context.user_data.get("original_request_data", {})
+            changes_text = _get_changes_text(original_data, context.user_data) if original_data else ""
+            chat_updated = False
+            update_error = None
+
             # Отримати message_id з БД
             try:
                 saved_request = db.get_request(request_id)
                 if saved_request:
                     message_id = saved_request.get("message_id")
-                    thread_id = saved_request.get("thread_id")
+                    thread_id = saved_request.get("thread_id") or thread_id
                     
                     if message_id:
                         # Редагувати існуюче повідомлення в групі
@@ -2045,36 +2067,37 @@ async def confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
                             text=notification,
                         )
                         logging.info(f"Updated message {message_id} for request {request_id}")
-                        
-                        # Відправити повідомлення про зміни
-                        original_data = context.user_data.get("original_request_data", {})
-                        if original_data:
-                            changes_text = _get_changes_text(original_data, context.user_data)
-                            try:
-                                await context.bot.send_message(
-                                    chat_id=chat_id,
-                                    text=f"🆔 Заявка {request_id}\n{changes_text}",
-                                    message_thread_id=thread_id,
-                                    reply_to_message_id=message_id,
-                                )
-                            except Exception as e:
-                                logging.error(f"Failed to send changes notification: {e}")
+                        chat_updated = True
                     else:
-                        # Якщо message_id немає - надіслати як нове
-                        message = await context.bot.send_message(
-                            chat_id=chat_id,
-                            text=notification,
-                            message_thread_id=thread_id,
-                        )
-                        message_id = message.message_id
+                        update_error = f"Missing message_id for request {request_id}"
+                        logging.error(update_error)
+                else:
+                    update_error = f"Request {request_id} not found in DB during edit"
+                    logging.error(update_error)
             except Exception as e:
+                update_error = str(e)
                 logging.error(f"Error updating message: {e}")
-                # Якщо помилка - надіслати як нове
-                message = await context.bot.send_message(
-                    chat_id=chat_id,
-                    text=notification,
+
+            if changes_text:
+                try:
+                    change_notice = f"🆔 Заявка {request_id}\n{changes_text}"
+                    send_kwargs = {
+                        "chat_id": chat_id,
+                        "text": change_notice,
+                    }
+                    if thread_id is not None:
+                        send_kwargs["message_thread_id"] = thread_id
+                    if message_id:
+                        send_kwargs["reply_to_message_id"] = message_id
+                    await context.bot.send_message(**send_kwargs)
+                except Exception as e:
+                    logging.error(f"Failed to send changes notification: {e}")
+
+            if not chat_updated:
+                await update.message.reply_text(
+                    "⚠️ Зміни збережено в БД та таблиці, але початкове повідомлення в групі не вдалося оновити. "
+                    "Повну заявку повторно в чат не надсилав."
                 )
-                message_id = message.message_id
         else:
             # Нова заявка - надіслати нове повідомлення
             thread_id = context.user_data.get("thread_id")
