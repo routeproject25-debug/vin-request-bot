@@ -2451,22 +2451,19 @@ async def restore_request_command(update: Update, context: ContextTypes.DEFAULT_
         await update.message.reply_text(f"❌ {message}")
 
 
-async def my_requests_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Показати останні заявки користувача з ID для швидкого редагування."""
-    user = update.effective_user
-    if not user:
-        return START
+PAGE_SIZE = 3
 
-    requests = db.get_user_requests(user.id, limit=10)
-    if not requests:
-        await update.message.reply_text(
-            "У вас ще немає збережених заявок.",
-            reply_markup=ReplyKeyboardRemove()
-        )
-        return START
 
-    await update.message.reply_text("Ваші останні заявки:", reply_markup=ReplyKeyboardRemove())
-    for req in requests:
+async def _send_requests_page(
+    send_func,
+    requests: list,
+    offset: int,
+    user_id: int,
+    total: int,
+) -> None:
+    """Надіслати одну сторінку заявок з кнопками керування."""
+    page = requests[offset:offset + PAGE_SIZE]
+    for req in page:
         rid = req.get("request_id", "—")
         status = req.get("status", "—")
         created_at = req.get("created_at")
@@ -2491,11 +2488,49 @@ async def my_requests_command(update: Update, context: ContextTypes.DEFAULT_TYPE
                 InlineKeyboardButton(text="📋 Копія заявки", callback_data=f"REQACT:COPY:{rid}"),
             ]
         ])
-        await update.message.reply_text(info_text, reply_markup=keyboard)
+        await send_func(info_text, reply_markup=keyboard)
 
+    next_offset = offset + PAGE_SIZE
+    if next_offset < total:
+        remaining = total - next_offset
+        nav_keyboard = InlineKeyboardMarkup([[
+            InlineKeyboardButton(
+                text=f"Ще заявки ↓ (залишилось {remaining})",
+                callback_data=f"REQACT:PAGE:{next_offset}"
+            )
+        ]])
+        await send_func(
+            f"Показано {min(offset + PAGE_SIZE, total)} з {total} заявок.",
+            reply_markup=nav_keyboard
+        )
+
+
+async def my_requests_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Показати останні заявки користувача з ID для швидкого редагування."""
+    user = update.effective_user
+    if not user:
+        return START
+
+    requests = db.get_user_requests(user.id, limit=50)
+    if not requests:
+        await update.message.reply_text(
+            "У вас ще немає збережених заявок.",
+            reply_markup=ReplyKeyboardRemove()
+        )
+        return START
+
+    total = len(requests)
+    context.user_data["my_requests_cache"] = requests
     await update.message.reply_text(
-        "Можна також вручну: /edit_request ID_ЗАЯВКИ",
+        f"Ваші заявки (всього {total}):",
         reply_markup=ReplyKeyboardRemove()
+    )
+    await _send_requests_page(
+        send_func=update.message.reply_text,
+        requests=requests,
+        offset=0,
+        user_id=user.id,
+        total=total,
     )
     return ConversationHandler.END
 
@@ -2513,8 +2548,32 @@ async def handle_request_action_callback(update: Update, context: ContextTypes.D
         await query.answer("Невірна дія", show_alert=True)
         return START
 
-    _, action, request_id = parts
-    request_id = request_id.strip().upper()
+    _, action, arg = parts
+
+    # Пагінація заявок
+    if action == "PAGE":
+        user = update.effective_user
+        if not user:
+            return START
+        try:
+            offset = int(arg)
+        except ValueError:
+            return START
+        requests = context.user_data.get("my_requests_cache")
+        if not requests:
+            requests = db.get_user_requests(user.id, limit=50)
+            context.user_data["my_requests_cache"] = requests
+        total = len(requests)
+        await _send_requests_page(
+            send_func=query.message.reply_text,
+            requests=requests,
+            offset=offset,
+            user_id=user.id,
+            total=total,
+        )
+        return ConversationHandler.END
+
+    request_id = arg.strip().upper()
 
     user = update.effective_user
     request = db.get_request(request_id)
