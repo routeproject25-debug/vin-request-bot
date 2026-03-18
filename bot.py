@@ -860,6 +860,8 @@ async def ask_question(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     if question.get("use_city_search"):
         show_back = index > 0
         buttons = []
+        if question.get("key") == "load_city":
+            buttons.append([KeyboardButton(text="Пропустити")])
         if show_back:
             buttons.append([KeyboardButton(text="⬅️ Назад")])
         
@@ -1496,6 +1498,25 @@ async def handle_period_end(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 async def handle_city_search_load(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Обробка введення пошукового запиту для населеного пункту завантаження"""
     text = (update.message.text or "").strip()
+
+    if text == "Пропустити":
+        context.user_data["load_city"] = "—"
+        if context.user_data.get("editing_mode"):
+            context.user_data.pop("editing_mode", None)
+            context.user_data["question_index"] = len(QUESTIONS)
+            await update.message.reply_text(
+                "✅ Населений пункт завантаження пропущено",
+                reply_markup=ReplyKeyboardRemove(),
+            )
+            return await ask_question(update, context)
+
+        index = context.user_data.get("question_index", 0)
+        context.user_data["question_index"] = index + 1
+        await update.message.reply_text(
+            "✅ Населений пункт завантаження пропущено",
+            reply_markup=ReplyKeyboardRemove(),
+        )
+        return await ask_question(update, context)
     
     if text == "⬅️ Назад":
         # В режимі редагування - повернутися до підтвердження
@@ -1521,6 +1542,7 @@ async def handle_city_search_load(update: Update, context: ContextTypes.DEFAULT_
     # Показати варіанти
     buttons = [[KeyboardButton(text=city["display"])] for city in cities]
     buttons.append([KeyboardButton(text="✍️ Ввести вручну")])
+    buttons.append([KeyboardButton(text="Пропустити")])
     
     index = context.user_data.get("question_index", 0)
     if index > 0:
@@ -1541,6 +1563,25 @@ async def handle_city_search_load(update: Update, context: ContextTypes.DEFAULT_
 async def handle_city_select_load(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Обробка вибору населеного пункту завантаження"""
     text = (update.message.text or "").strip()
+
+    if text == "Пропустити":
+        context.user_data["load_city"] = "—"
+        if context.user_data.get("editing_mode"):
+            context.user_data.pop("editing_mode", None)
+            context.user_data["question_index"] = len(QUESTIONS)
+            await update.message.reply_text(
+                "✅ Населений пункт завантаження пропущено",
+                reply_markup=ReplyKeyboardRemove(),
+            )
+            return await ask_question(update, context)
+
+        index = context.user_data.get("question_index", 0)
+        context.user_data["question_index"] = index + 1
+        await update.message.reply_text(
+            "✅ Населений пункт завантаження пропущено",
+            reply_markup=ReplyKeyboardRemove(),
+        )
+        return await ask_question(update, context)
     
     if text == "⬅️ Назад":
         # В режимі редагування - повернутися до підтвердження
