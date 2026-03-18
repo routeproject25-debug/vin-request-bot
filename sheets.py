@@ -266,8 +266,9 @@ def export_to_sheets(data: Dict[str, Any]) -> Tuple[bool, str]:
         
         header_map = {h.strip(): idx for idx, h in enumerate(headers) if h and h.strip()}
         logger.info(f"✓ Header map created with {len(header_map)} entries")
+        request_id = (data.get("request_id") or "").strip().upper()
         base_values_by_header = {
-            "ID заявки": data.get("request_id", "—"),
+            "ID заявки": request_id or "—",
             "Статус": "АКТИВНА",
             "Дата": date_str,
             "Час": time_str,
@@ -292,6 +293,9 @@ def export_to_sheets(data: Dict[str, Any]) -> Tuple[bool, str]:
             "Номер телефона на розвантаженні": unload_phone,
         }
 
+        if "Головний ID заявки" in header_map:
+            base_values_by_header["Головний ID заявки"] = request_id or "—"
+
         # Якщо є декілька НП розвантаження і розподіл — формуємо окремі рядки по кожному НП.
         unload_cities = _split_multi_values(data.get("unload_city"))
         raw_distribution = data.get("unload_distribution")
@@ -299,12 +303,14 @@ def export_to_sheets(data: Dict[str, Any]) -> Tuple[bool, str]:
 
         rows_payload: List[Dict[str, Any]] = []
         if len(unload_cities) > 1 and distribution:
-            for city in unload_cities:
+            for idx, city in enumerate(unload_cities, start=1):
                 city_volume = distribution.get(city)
                 if city_volume is None:
                     continue
 
                 city_values = dict(base_values_by_header)
+                if request_id:
+                    city_values["ID заявки"] = f"{request_id}-{idx:02d}"
                 city_values["Населений пункт розвантаження"] = city
                 city_values["Склад розвантаження"] = "—"
                 city_values["Обсяг"] = _format_volume_with_unit(data.get("size_type", ""), city_volume)
@@ -333,7 +339,6 @@ def export_to_sheets(data: Dict[str, Any]) -> Tuple[bool, str]:
         logger.info(f"✓ Prepared {len(rows)} row(s) for export")
 
         # Якщо заявка з таким ID вже існує - видаляємо всі її рядки і вставляємо оновлені.
-        request_id = (data.get("request_id") or "").strip().upper()
         id_idx = header_map.get("ID заявки")
         existing_rows: List[int] = []
 
@@ -341,7 +346,7 @@ def export_to_sheets(data: Dict[str, Any]) -> Tuple[bool, str]:
             id_column_values = worksheet.col_values(id_idx + 1)
             for row_number in range(2, len(id_column_values) + 1):
                 row_id = (id_column_values[row_number - 1] or "").strip().upper()
-                if row_id == request_id:
+                if row_id == request_id or row_id.startswith(f"{request_id}-"):
                     existing_rows.append(row_number)
 
         if existing_rows:
@@ -396,11 +401,16 @@ def mark_request_deleted(request_id: str, deleted_by: str = "") -> Tuple[bool, s
 
         id_column_values = worksheet.col_values(id_idx + 1)
         normalized_request_id = request_id.strip().upper()
+        parent_request_id = normalized_request_id.split("-", 1)[0] if "-" in normalized_request_id else normalized_request_id
 
         matched_rows: List[int] = []
         for row_number in range(2, len(id_column_values) + 1):
             row_id = (id_column_values[row_number - 1] or "").strip().upper()
-            if row_id == normalized_request_id:
+            if (
+                row_id == normalized_request_id
+                or row_id == parent_request_id
+                or row_id.startswith(f"{parent_request_id}-")
+            ):
                 matched_rows.append(row_number)
 
         if not matched_rows:
@@ -465,11 +475,16 @@ def restore_request(request_id: str, restored_by: str = "") -> Tuple[bool, str]:
 
         id_column_values = worksheet.col_values(id_idx + 1)
         normalized_request_id = request_id.strip().upper()
+        parent_request_id = normalized_request_id.split("-", 1)[0] if "-" in normalized_request_id else normalized_request_id
 
         matched_rows: List[int] = []
         for row_number in range(2, len(id_column_values) + 1):
             row_id = (id_column_values[row_number - 1] or "").strip().upper()
-            if row_id == normalized_request_id:
+            if (
+                row_id == normalized_request_id
+                or row_id == parent_request_id
+                or row_id.startswith(f"{parent_request_id}-")
+            ):
                 matched_rows.append(row_number)
 
         if not matched_rows:

@@ -340,6 +340,60 @@ def _format_volume_for_size(size_type: str, value: float) -> str:
     return f"{_format_number(value)} {unit}"
 
 
+def _resolve_parent_request_id(request_id: str) -> str:
+    rid = (request_id or "").strip().upper()
+    if not rid:
+        return rid
+    if "-" not in rid:
+        return rid
+    head, tail = rid.rsplit("-", 1)
+    return head if tail.isdigit() else rid
+
+
+def _build_request_display_entries(requests: list) -> list:
+    entries = []
+    for req in requests:
+        rid = (req.get("request_id") or "").strip().upper()
+        data = req.get("request_data") or {}
+        if not isinstance(data, dict):
+            data = {}
+
+        unload_cities = _split_location_values(data.get("unload_city"))
+        distribution = data.get("unload_distribution") if isinstance(data.get("unload_distribution"), dict) else {}
+
+        if rid and len(unload_cities) > 1 and distribution:
+            added_split_entries = False
+            for idx, city in enumerate(unload_cities, start=1):
+                city_amount = distribution.get(city)
+                if city_amount is None:
+                    continue
+
+                child_data = dict(data)
+                child_data["unload_city"] = city
+                numeric_amount = _to_float(city_amount)
+                if numeric_amount is not None:
+                    child_data["volume"] = _format_number(numeric_amount)
+
+                child_entry = dict(req)
+                child_entry["parent_request_id"] = rid
+                child_entry["display_request_id"] = f"{rid}-{idx:02d}"
+                child_entry["request_data"] = child_data
+                child_entry["is_split_part"] = True
+                entries.append(child_entry)
+                added_split_entries = True
+
+            if added_split_entries:
+                continue
+
+        normal_entry = dict(req)
+        normal_entry["parent_request_id"] = rid
+        normal_entry["display_request_id"] = rid or "—"
+        normal_entry["is_split_part"] = False
+        entries.append(normal_entry)
+
+    return entries
+
+
 def _should_skip_question(question_key: str, data: Dict[str, Any]) -> bool:
     # Пропускати big_bag_weight для всіх розмірів окрім Біг-бегу
     if question_key == "big_bag_weight" and data.get("size_type") != "Біг-бег":
@@ -2840,15 +2894,16 @@ PAGE_SIZE = 3
 
 async def _send_requests_page(
     send_func,
-    requests: list,
+    request_entries: list,
     offset: int,
     user_id: int,
     total: int,
 ) -> None:
     """Надіслати одну сторінку заявок з кнопками керування."""
-    page = requests[offset:offset + PAGE_SIZE]
+    page = request_entries[offset:offset + PAGE_SIZE]
     for req in page:
-        rid = req.get("request_id", "—")
+        rid = req.get("display_request_id", req.get("request_id", "—"))
+        parent_rid = req.get("parent_request_id", req.get("request_id", "—"))
         status = req.get("status", "—")
         created_at = req.get("created_at")
         created_str = created_at.strftime("%d.%m %H:%M") if created_at else "—"
@@ -2857,19 +2912,27 @@ async def _send_requests_page(
         cargo = data.get("cargo_type", "—")
         load_city = data.get("load_city", "—")
         unload_city = data.get("unload_city", "—")
+        volume_text = "—"
+        volume_value = _to_float(data.get("volume"))
+        if volume_value is not None:
+            volume_text = _format_volume_for_size(data.get("size_type", ""), volume_value)
+
+        split_suffix = "\n  🔗 Частина заявки: {0}".format(parent_rid) if req.get("is_split_part") else ""
         info_text = (
             f"• {rid} | {status} | {created_str}\n"
             f"  👤 Ініціатор: {initiator}\n"
             f"  📦 Вантаж: {cargo}\n"
+            f"  ⚖️ Обсяг: {volume_text}\n"
             f"  📍 Маршрут: {load_city} → {unload_city}"
+            f"{split_suffix}"
         )
         keyboard = InlineKeyboardMarkup([
             [
-                InlineKeyboardButton(text="✏️ Редагувати", callback_data=f"REQACT:EDIT:{rid}"),
-                InlineKeyboardButton(text="🗑️ Видалити", callback_data=f"REQACT:DEL:{rid}"),
+                InlineKeyboardButton(text="✏️ Редагувати", callback_data=f"REQACT:EDIT:{parent_rid}"),
+                InlineKeyboardButton(text="🗑️ Видалити", callback_data=f"REQACT:DEL:{parent_rid}"),
             ],
             [
-                InlineKeyboardButton(text="📋 Копія заявки", callback_data=f"REQACT:COPY:{rid}"),
+                InlineKeyboardButton(text="📋 Копія заявки", callback_data=f"REQACT:COPY:{parent_rid}"),
             ]
         ])
         await send_func(info_text, reply_markup=keyboard)
@@ -2903,15 +2966,16 @@ async def my_requests_command(update: Update, context: ContextTypes.DEFAULT_TYPE
         )
         return START
 
-    total = len(requests)
-    context.user_data["my_requests_cache"] = requests
+    entries = _build_request_display_entries(requests)
+    total = len(entries)
+    context.user_data["my_requests_cache"] = entries
     await update.message.reply_text(
         f"Ваші заявки (всього {total}):",
         reply_markup=ReplyKeyboardRemove()
     )
     await _send_requests_page(
         send_func=update.message.reply_text,
-        requests=requests,
+        request_entries=entries,
         offset=0,
         user_id=user.id,
         total=total,
@@ -2943,14 +3007,15 @@ async def handle_request_action_callback(update: Update, context: ContextTypes.D
             offset = int(arg)
         except ValueError:
             return START
-        requests = context.user_data.get("my_requests_cache")
-        if not requests:
+        request_entries = context.user_data.get("my_requests_cache")
+        if not request_entries:
             requests = db.get_user_requests(user.id, limit=50)
-            context.user_data["my_requests_cache"] = requests
-        total = len(requests)
+            request_entries = _build_request_display_entries(requests)
+            context.user_data["my_requests_cache"] = request_entries
+        total = len(request_entries)
         await _send_requests_page(
             send_func=query.message.reply_text,
-            requests=requests,
+            request_entries=request_entries,
             offset=offset,
             user_id=user.id,
             total=total,
@@ -2958,9 +3023,13 @@ async def handle_request_action_callback(update: Update, context: ContextTypes.D
         return ConversationHandler.END
 
     request_id = arg.strip().upper()
+    parent_request_id = _resolve_parent_request_id(request_id)
 
     user = update.effective_user
     request = db.get_request(request_id)
+    if not request and parent_request_id != request_id:
+        request = db.get_request(parent_request_id)
+        request_id = parent_request_id
     if not request:
         await query.answer("Заявку не знайдено", show_alert=True)
         return START
@@ -3112,7 +3181,11 @@ async def edit_request_command(update: Update, context: ContextTypes.DEFAULT_TYP
         return START
 
     request_id = context.args[0].strip().upper()
+    parent_request_id = _resolve_parent_request_id(request_id)
     request = db.get_request(request_id)
+    if not request and parent_request_id != request_id:
+        request = db.get_request(parent_request_id)
+        request_id = parent_request_id
     if not request:
         await update.message.reply_text(f"❌ Заявку з ID {request_id} не знайдено")
         return START
