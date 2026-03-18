@@ -60,7 +60,7 @@ logging.getLogger().addFilter(_RedactBotTokenFilter())
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
 
-START, DEPARTMENT, QUESTION, CUSTOM_INPUT, CROP_TYPE, CONFIRM, EDIT, DATE_TYPE, DATE_CALENDAR, DATE_PERIOD_END, LOAD_TEMPLATE, TEMPLATE_SELECT, SAVE_TEMPLATE_NAME, SAVE_TEMPLATE_CONFIRM, DELETE_TEMPLATE_CONFIRM, CITY_SEARCH_LOAD, CITY_SELECT_LOAD, CITY_SEARCH_UNLOAD, CITY_SELECT_UNLOAD = range(19)
+START, DEPARTMENT, QUESTION, CUSTOM_INPUT, CROP_TYPE, CONFIRM, EDIT, DATE_TYPE, DATE_CALENDAR, DATE_PERIOD_END, LOAD_TEMPLATE, TEMPLATE_SELECT, SAVE_TEMPLATE_NAME, SAVE_TEMPLATE_CONFIRM, DELETE_TEMPLATE_CONFIRM, CITY_SEARCH_LOAD, CITY_SELECT_LOAD, CITY_SEARCH_UNLOAD, CITY_SELECT_UNLOAD, UNLOAD_DISTRIBUTION = range(20)
 
 THREAD_IDS = {
     "Тваринництво": 2,
@@ -322,6 +322,24 @@ def _build_location_actions_keyboard(include_skip: bool = False) -> ReplyKeyboar
     return ReplyKeyboardMarkup(buttons, resize_keyboard=True, one_time_keyboard=True)
 
 
+def _to_float(value: Any) -> Optional[float]:
+    try:
+        return float(str(value).replace(" ", "").replace(",", "."))
+    except Exception:
+        return None
+
+
+def _format_number(value: float) -> str:
+    if abs(value - round(value)) < 1e-9:
+        return str(int(round(value)))
+    return f"{value:.3f}".rstrip("0").rstrip(".")
+
+
+def _format_volume_for_size(size_type: str, value: float) -> str:
+    unit = "шт" if size_type == "Біг-бег" else "т"
+    return f"{_format_number(value)} {unit}"
+
+
 def _should_skip_question(question_key: str, data: Dict[str, Any]) -> bool:
     # Пропускати big_bag_weight для всіх розмірів окрім Біг-бегу
     if question_key == "big_bag_weight" and data.get("size_type") != "Біг-бег":
@@ -347,6 +365,11 @@ def _should_skip_question(question_key: str, data: Dict[str, Any]) -> bool:
     cargo_type = _normalize_cargo_type(data.get("cargo_type"))
     if cargo_type in LIQUID_BULK_CARGO and question_key in {"load_method", "unload_method"}:
         return True
+
+    # Якщо обрано декілька НП розвантаження, склад розвантаження пропускаємо.
+    if question_key == "unload_place" and len(_split_location_values(data.get("unload_city"))) > 1:
+        return True
+
     size_type = data.get("size_type", "").strip()
     if size_type == "Насип" and question_key == "unload_method":
         return True
@@ -894,6 +917,12 @@ async def ask_question(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     
     # Якщо це питання про населений пункт - запускаємо пошук
     if question.get("use_city_search"):
+        if question.get("key") == "unload_city":
+            context.user_data.pop("unload_distribution", None)
+            context.user_data.pop("unload_distribution_cities", None)
+            context.user_data.pop("unload_distribution_total", None)
+            context.user_data.pop("unload_distribution_idx", None)
+
         show_back = index > 0
         buttons = []
         if question.get("key") == "load_city":
@@ -1531,6 +1560,148 @@ async def handle_period_end(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     return DATE_PERIOD_END
 
 
+async def _ask_unload_distribution_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    cities = context.user_data.get("unload_distribution_cities") or []
+    idx = context.user_data.get("unload_distribution_idx", 0)
+    total = context.user_data.get("unload_distribution_total")
+    allocations = context.user_data.get("unload_distribution") or {}
+
+    if idx >= len(cities):
+        return await ask_question(update, context)
+
+    current_city = cities[idx]
+    allocated_sum = sum(float(v) for v in allocations.values())
+    remaining = float(total) - allocated_sum
+    size_type = context.user_data.get("size_type", "")
+    total_text = _format_volume_for_size(size_type, float(total))
+    remaining_text = _format_volume_for_size(size_type, max(remaining, 0.0))
+
+    keyboard = ReplyKeyboardMarkup(
+        [[KeyboardButton(text="⬅️ Назад")]],
+        resize_keyboard=True,
+        one_time_keyboard=True,
+    )
+
+    await update.message.reply_text(
+        f"Розподіл обсягу по НП розвантаження ({idx + 1}/{len(cities)}):\n"
+        f"📍 {current_city}\n"
+        f"Загальний обсяг: {total_text}\n"
+        f"Залишок до розподілу: {remaining_text}\n\n"
+        f"Вкажіть кількість для цього НП (тільки число):",
+        reply_markup=keyboard,
+    )
+    return UNLOAD_DISTRIBUTION
+
+
+async def _finish_unload_city_step(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    selected = _split_location_values(context.user_data.get("unload_city"))
+
+    # Для одного НП розподіл не потрібен.
+    if len(selected) <= 1:
+        context.user_data.pop("unload_distribution", None)
+        context.user_data.pop("unload_distribution_cities", None)
+        context.user_data.pop("unload_distribution_total", None)
+        context.user_data.pop("unload_distribution_idx", None)
+        if context.user_data.get("editing_mode"):
+            context.user_data.pop("editing_mode", None)
+            context.user_data["question_index"] = len(QUESTIONS)
+            return await ask_question(update, context)
+
+        index = context.user_data.get("question_index", 0)
+        context.user_data["question_index"] = index + 1
+        return await ask_question(update, context)
+
+    total_volume = _to_float(context.user_data.get("volume"))
+    if not total_volume or total_volume <= 0:
+        # fallback: якщо не вдалося розпарсити загальний обсяг, ідемо без розподілу
+        if context.user_data.get("editing_mode"):
+            context.user_data.pop("editing_mode", None)
+            context.user_data["question_index"] = len(QUESTIONS)
+            return await ask_question(update, context)
+
+        index = context.user_data.get("question_index", 0)
+        context.user_data["question_index"] = index + 1
+        return await ask_question(update, context)
+
+    context.user_data["unload_distribution_cities"] = selected
+    context.user_data["unload_distribution_total"] = total_volume
+    context.user_data["unload_distribution_idx"] = 0
+    context.user_data["unload_distribution"] = {}
+    return await _ask_unload_distribution_prompt(update, context)
+
+
+async def handle_unload_distribution(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    text = (update.message.text or "").strip()
+
+    cities = context.user_data.get("unload_distribution_cities") or []
+    idx = int(context.user_data.get("unload_distribution_idx", 0))
+    total = float(context.user_data.get("unload_distribution_total", 0) or 0)
+    allocations = context.user_data.get("unload_distribution") or {}
+
+    if not cities or total <= 0:
+        return await _finish_unload_city_step(update, context)
+
+    if text == "⬅️ Назад":
+        if idx <= 0:
+            await update.message.reply_text("Повертаю до вибору НП розвантаження.")
+            return CITY_SEARCH_UNLOAD
+
+        prev_city = cities[idx - 1]
+        allocations.pop(prev_city, None)
+        context.user_data["unload_distribution"] = allocations
+        context.user_data["unload_distribution_idx"] = idx - 1
+        return await _ask_unload_distribution_prompt(update, context)
+
+    value = _to_float(text)
+    if value is None or value <= 0:
+        await update.message.reply_text("❌ Введіть коректне число більше 0.")
+        return UNLOAD_DISTRIBUTION
+
+    current_city = cities[idx]
+    allocated_sum = sum(float(v) for v in allocations.values())
+    remaining = total - allocated_sum
+    is_last = idx == len(cities) - 1
+
+    if value - remaining > 1e-9:
+        await update.message.reply_text(
+            f"❌ Значення більше за залишок. Доступно: {_format_number(max(remaining, 0.0))}"
+        )
+        return UNLOAD_DISTRIBUTION
+
+    if is_last and abs(value - remaining) > 1e-9:
+        await update.message.reply_text(
+            f"❌ Для останнього НП потрібно вказати рівно залишок: {_format_number(max(remaining, 0.0))}"
+        )
+        return UNLOAD_DISTRIBUTION
+
+    allocations[current_city] = value
+    context.user_data["unload_distribution"] = allocations
+    context.user_data["unload_distribution_idx"] = idx + 1
+
+    if idx + 1 < len(cities):
+        return await _ask_unload_distribution_prompt(update, context)
+
+    # Розподіл завершено.
+    size_type = context.user_data.get("size_type", "")
+    summary_lines = [
+        f"• {city}: {_format_volume_for_size(size_type, float(amount))}"
+        for city, amount in allocations.items()
+    ]
+    await update.message.reply_text(
+        "✅ Розподіл за НП збережено:\n" + "\n".join(summary_lines),
+        reply_markup=ReplyKeyboardRemove(),
+    )
+
+    if context.user_data.get("editing_mode"):
+        context.user_data.pop("editing_mode", None)
+        context.user_data["question_index"] = len(QUESTIONS)
+    else:
+        index = context.user_data.get("question_index", 0)
+        context.user_data["question_index"] = index + 1
+
+    return await ask_question(update, context)
+
+
 async def handle_city_search_load(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Обробка введення пошукового запиту для населеного пункту завантаження"""
     text = (update.message.text or "").strip()
@@ -1753,14 +1924,7 @@ async def handle_city_search_unload(update: Update, context: ContextTypes.DEFAUL
     if text == "✅ Готово":
         selected = _split_location_values(context.user_data.get("unload_city"))
         if selected:
-            if context.user_data.get("editing_mode"):
-                context.user_data.pop("editing_mode", None)
-                context.user_data["question_index"] = len(QUESTIONS)
-                return await ask_question(update, context)
-
-            index = context.user_data.get("question_index", 0)
-            context.user_data["question_index"] = index + 1
-            return await ask_question(update, context)
+            return await _finish_unload_city_step(update, context)
 
         await update.message.reply_text("Додайте хоча б один пункт розвантаження.")
         return CITY_SEARCH_UNLOAD
@@ -1843,14 +2007,7 @@ async def handle_city_select_unload(update: Update, context: ContextTypes.DEFAUL
     if text == "✅ Готово":
         selected = _split_location_values(context.user_data.get("unload_city"))
         if selected:
-            if context.user_data.get("editing_mode"):
-                context.user_data.pop("editing_mode", None)
-                context.user_data["question_index"] = len(QUESTIONS)
-                return await ask_question(update, context)
-
-            index = context.user_data.get("question_index", 0)
-            context.user_data["question_index"] = index + 1
-            return await ask_question(update, context)
+            return await _finish_unload_city_step(update, context)
 
         await update.message.reply_text("Додайте хоча б один пункт розвантаження.")
         return CITY_SELECT_UNLOAD
@@ -3069,6 +3226,10 @@ def build_app() -> Application:
             ],
             CITY_SELECT_UNLOAD: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_city_select_unload),
+                CommandHandler("cancel", cancel),
+            ],
+            UNLOAD_DISTRIBUTION: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_unload_distribution),
                 CommandHandler("cancel", cancel),
             ],
             CONFIRM: [

@@ -1,7 +1,7 @@
 import os
 import re
 import logging
-from typing import Dict, Any, Tuple, Optional
+from typing import Dict, Any, Tuple, Optional, List
 import gspread
 from google.oauth2.service_account import Credentials
 from datetime import datetime
@@ -92,6 +92,36 @@ def _safe_sheet_value(value: Any) -> Any:
     if cleaned.startswith("+"):
         return "'" + cleaned
     return cleaned
+
+
+def _split_multi_values(value: Any) -> List[str]:
+    if value is None:
+        return []
+    text = str(value).strip()
+    if not text or text == "—":
+        return []
+    return [part.strip() for part in text.split(";") if part.strip()]
+
+
+def _to_float(value: Any) -> Optional[float]:
+    try:
+        return float(str(value).replace(" ", "").replace(",", "."))
+    except Exception:
+        return None
+
+
+def _format_number(value: float) -> str:
+    if abs(value - round(value)) < 1e-9:
+        return str(int(round(value)))
+    return f"{value:.3f}".rstrip("0").rstrip(".")
+
+
+def _format_volume_with_unit(size_type: str, volume_value: Any) -> str:
+    numeric = _to_float(volume_value)
+    if numeric is None:
+        return "—"
+    unit = "шт" if size_type == "Біг-бег" else "т"
+    return f"{_format_number(numeric)} {unit}"
 
 
 def get_sheets_client():
@@ -203,15 +233,7 @@ def export_to_sheets(data: Dict[str, Any]) -> Tuple[bool, str]:
             size_type_display = size_type
         
         # Форматувати обсяг
-        if volume != "—":
-            if data.get("size_type") == "Біг-бег":
-                volume_display = f"{volume} шт"
-            elif data.get("size_type") in ["Насип", "Рідкі"]:
-                volume_display = f"{volume} т"
-            else:
-                volume_display = f"{volume} т"
-        else:
-            volume_display = "—"
+        volume_display = _format_volume_with_unit(data.get("size_type", ""), volume)
         
         # Обробити дату/період
         date_period = data.get("date_period", "—")
@@ -232,7 +254,7 @@ def export_to_sheets(data: Dict[str, Any]) -> Tuple[bool, str]:
                 # Одна дата - це дата початку
                 date_start = date_period
         
-        # Підготувати рядок даних по заголовках таблиці
+        # Підготувати рядок(и) даних по заголовках таблиці
         headers = worksheet.row_values(1)
         logger.info(f"✓ Headers read: {len(headers)} columns")
         logger.debug(f"Headers: {headers}")
@@ -244,8 +266,7 @@ def export_to_sheets(data: Dict[str, Any]) -> Tuple[bool, str]:
         
         header_map = {h.strip(): idx for idx, h in enumerate(headers) if h and h.strip()}
         logger.info(f"✓ Header map created with {len(header_map)} entries")
-        row = ["" for _ in headers]
-        values_by_header = {
+        base_values_by_header = {
             "ID заявки": data.get("request_id", "—"),
             "Статус": "АКТИВНА",
             "Дата": date_str,
@@ -271,38 +292,64 @@ def export_to_sheets(data: Dict[str, Any]) -> Tuple[bool, str]:
             "Номер телефона на розвантаженні": unload_phone,
         }
 
-        for header, value in values_by_header.items():
-            idx = header_map.get(header)
-            if idx is None:
-                logger.warning(f"Header '{header}' not found in sheet '{worksheet_name}'")
-                continue
-            row[idx] = _safe_sheet_value(value)
-        
-        logger.info(f"✓ Row data prepared with {len([v for v in row if v])} non-empty cells")
-        
-        # Якщо заявка з таким ID вже існує - оновити її рядок, а не додавати дубль
+        # Якщо є декілька НП розвантаження і розподіл — формуємо окремі рядки по кожному НП.
+        unload_cities = _split_multi_values(data.get("unload_city"))
+        raw_distribution = data.get("unload_distribution")
+        distribution = raw_distribution if isinstance(raw_distribution, dict) else {}
+
+        rows_payload: List[Dict[str, Any]] = []
+        if len(unload_cities) > 1 and distribution:
+            for city in unload_cities:
+                city_volume = distribution.get(city)
+                if city_volume is None:
+                    continue
+
+                city_values = dict(base_values_by_header)
+                city_values["Населений пункт розвантаження"] = city
+                city_values["Склад розвантаження"] = "—"
+                city_values["Обсяг"] = _format_volume_with_unit(data.get("size_type", ""), city_volume)
+                rows_payload.append(city_values)
+
+            if rows_payload:
+                logger.info(f"✓ Prepared {len(rows_payload)} split rows for unload cities")
+
+        if not rows_payload:
+            # fallback: стандартний один рядок
+            if len(unload_cities) > 1:
+                base_values_by_header["Склад розвантаження"] = "—"
+            rows_payload = [base_values_by_header]
+
+        rows: List[List[Any]] = []
+        for values_by_header in rows_payload:
+            row = ["" for _ in headers]
+            for header, value in values_by_header.items():
+                idx = header_map.get(header)
+                if idx is None:
+                    logger.warning(f"Header '{header}' not found in sheet '{worksheet_name}'")
+                    continue
+                row[idx] = _safe_sheet_value(value)
+            rows.append(row)
+
+        logger.info(f"✓ Prepared {len(rows)} row(s) for export")
+
+        # Якщо заявка з таким ID вже існує - видаляємо всі її рядки і вставляємо оновлені.
         request_id = (data.get("request_id") or "").strip().upper()
         id_idx = header_map.get("ID заявки")
-        existing_row = None
+        existing_rows: List[int] = []
 
         if request_id and id_idx is not None:
             id_column_values = worksheet.col_values(id_idx + 1)
             for row_number in range(2, len(id_column_values) + 1):
                 row_id = (id_column_values[row_number - 1] or "").strip().upper()
                 if row_id == request_id:
-                    existing_row = row_number
-                    break
+                    existing_rows.append(row_number)
 
-        if existing_row:
-            logger.info(f"Updating existing row for request_id={request_id} at row {existing_row}")
-            for header, value in values_by_header.items():
-                idx = header_map.get(header)
-                if idx is None:
-                    continue
-                worksheet.update_cell(existing_row, idx + 1, _safe_sheet_value(value))
-        else:
-            # Нова заявка: додати рядок на позицію 2 (після заголовка)
-            logger.info("Attempting to insert row at position 2...")
+        if existing_rows:
+            logger.info(f"Deleting {len(existing_rows)} existing row(s) for request_id={request_id}")
+            for row_number in sorted(existing_rows, reverse=True):
+                worksheet.delete_rows(row_number)
+
+        for row in reversed(rows):
             worksheet.insert_row(row, index=2, value_input_option='RAW')
         
         logger.info(f"✅ Successfully exported request to Google Sheets (spreadsheet: {spreadsheet_id})")
@@ -350,30 +397,34 @@ def mark_request_deleted(request_id: str, deleted_by: str = "") -> Tuple[bool, s
         id_column_values = worksheet.col_values(id_idx + 1)
         normalized_request_id = request_id.strip().upper()
 
-        matched_row = None
+        matched_rows: List[int] = []
         for row_number in range(2, len(id_column_values) + 1):
             row_id = (id_column_values[row_number - 1] or "").strip().upper()
             if row_id == normalized_request_id:
-                matched_row = row_number
-                break
+                matched_rows.append(row_number)
 
-        if not matched_row:
+        if not matched_rows:
             return False, f"Заявку з ID '{request_id}' не знайдено"
 
-        current_status = (worksheet.cell(matched_row, status_idx + 1).value or "").strip().upper()
-        if current_status == "ВИДАЛЕНО":
-            return True, f"Заявка {request_id} вже позначена як ВИДАЛЕНО"
-
-        worksheet.update_cell(matched_row, status_idx + 1, "ВИДАЛЕНО")
+        updated_count = 0
+        for row_number in matched_rows:
+            current_status = (worksheet.cell(row_number, status_idx + 1).value or "").strip().upper()
+            if current_status == "ВИДАЛЕНО":
+                continue
+            worksheet.update_cell(row_number, status_idx + 1, "ВИДАЛЕНО")
+            updated_count += 1
 
         comment_idx = header_map.get("Коментар видалення")
         if comment_idx is not None:
             kyiv_tz = pytz.timezone('Europe/Kyiv')
             timestamp = datetime.now(kyiv_tz).strftime("%d.%m.%Y %H:%M")
             by_text = deleted_by.strip() if deleted_by else "Невідомий користувач"
-            worksheet.update_cell(matched_row, comment_idx + 1, f"{timestamp} | {by_text}")
+            for row_number in matched_rows:
+                worksheet.update_cell(row_number, comment_idx + 1, f"{timestamp} | {by_text}")
 
-        return True, f"Заявка {request_id} позначена як ВИДАЛЕНО"
+        if updated_count == 0:
+            return True, f"Заявка {request_id} вже позначена як ВИДАЛЕНО"
+        return True, f"Заявка {request_id} позначена як ВИДАЛЕНО ({updated_count} рядків)"
 
     except Exception as e:
         logger.error(f"Error marking request deleted: {e}")
@@ -415,30 +466,34 @@ def restore_request(request_id: str, restored_by: str = "") -> Tuple[bool, str]:
         id_column_values = worksheet.col_values(id_idx + 1)
         normalized_request_id = request_id.strip().upper()
 
-        matched_row = None
+        matched_rows: List[int] = []
         for row_number in range(2, len(id_column_values) + 1):
             row_id = (id_column_values[row_number - 1] or "").strip().upper()
             if row_id == normalized_request_id:
-                matched_row = row_number
-                break
+                matched_rows.append(row_number)
 
-        if not matched_row:
+        if not matched_rows:
             return False, f"Заявку з ID '{request_id}' не знайдено"
 
-        current_status = (worksheet.cell(matched_row, status_idx + 1).value or "").strip().upper()
-        if current_status == "АКТИВНА":
-            return True, f"Заявка {request_id} вже має статус АКТИВНА"
-
-        worksheet.update_cell(matched_row, status_idx + 1, "АКТИВНА")
+        updated_count = 0
+        for row_number in matched_rows:
+            current_status = (worksheet.cell(row_number, status_idx + 1).value or "").strip().upper()
+            if current_status == "АКТИВНА":
+                continue
+            worksheet.update_cell(row_number, status_idx + 1, "АКТИВНА")
+            updated_count += 1
 
         comment_idx = header_map.get("Коментар відновлення")
         if comment_idx is not None:
             kyiv_tz = pytz.timezone('Europe/Kyiv')
             timestamp = datetime.now(kyiv_tz).strftime("%d.%m.%Y %H:%M")
             by_text = restored_by.strip() if restored_by else "Невідомий користувач"
-            worksheet.update_cell(matched_row, comment_idx + 1, f"{timestamp} | {by_text}")
+            for row_number in matched_rows:
+                worksheet.update_cell(row_number, comment_idx + 1, f"{timestamp} | {by_text}")
 
-        return True, f"Заявка {request_id} відновлена (статус: АКТИВНА)"
+        if updated_count == 0:
+            return True, f"Заявка {request_id} вже має статус АКТИВНА"
+        return True, f"Заявка {request_id} відновлена (статус: АКТИВНА, {updated_count} рядків)"
 
     except Exception as e:
         logger.error(f"Error restoring request: {e}")
