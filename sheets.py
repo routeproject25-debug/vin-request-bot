@@ -40,6 +40,7 @@ def _parse_contact(contact_str: str) -> Tuple[str, str]:
     
     # Патерни для номерів телефону (українські формати)
     phone_patterns = [
+        r'\+?38[\s\-]?0\s?[0-9]{2}[\s\-]?[0-9]{3}[\s\-]?[0-9]{2}[\s\-]?[0-9]{2}',  # +380 96 477 39 40
         r'\+?38\s?0[0-9]{2}[\s\-]?[0-9]{3}[\s\-]?[0-9]{2}[\s\-]?[0-9]{2}',  # +380501234567, 0501234567
         r'0[0-9]{2}[\s\-]?[0-9]{3}[\s\-]?[0-9]{2}[\s\-]?[0-9]{2}',  # 050-123-45-67
         r'\([0-9]{3}\)\s?[0-9]{3}[\s\-]?[0-9]{2}[\s\-]?[0-9]{2}',  # (050) 123-45-67
@@ -74,6 +75,23 @@ def _parse_contact(contact_str: str) -> Tuple[str, str]:
         phone_number = "—"
     
     return (name, phone_number)
+
+
+def _safe_sheet_value(value: Any) -> Any:
+    """Підготувати значення для запису в Google Sheets без спроби обчислення формул."""
+    if value is None:
+        return "—"
+    if not isinstance(value, str):
+        return value
+
+    cleaned = value.strip()
+    if not cleaned:
+        return "—"
+
+    # Якщо текст починається з '+', Sheets у USER_ENTERED може трактувати це як формулу.
+    if cleaned.startswith("+"):
+        return "'" + cleaned
+    return cleaned
 
 
 def get_sheets_client():
@@ -258,7 +276,7 @@ def export_to_sheets(data: Dict[str, Any]) -> Tuple[bool, str]:
             if idx is None:
                 logger.warning(f"Header '{header}' not found in sheet '{worksheet_name}'")
                 continue
-            row[idx] = value
+            row[idx] = _safe_sheet_value(value)
         
         logger.info(f"✓ Row data prepared with {len([v for v in row if v])} non-empty cells")
         
@@ -281,11 +299,11 @@ def export_to_sheets(data: Dict[str, Any]) -> Tuple[bool, str]:
                 idx = header_map.get(header)
                 if idx is None:
                     continue
-                worksheet.update_cell(existing_row, idx + 1, value)
+                worksheet.update_cell(existing_row, idx + 1, _safe_sheet_value(value))
         else:
             # Нова заявка: додати рядок на позицію 2 (після заголовка)
             logger.info("Attempting to insert row at position 2...")
-            worksheet.insert_row(row, index=2, value_input_option='USER_ENTERED')
+            worksheet.insert_row(row, index=2, value_input_option='RAW')
         
         logger.info(f"✅ Successfully exported request to Google Sheets (spreadsheet: {spreadsheet_id})")
         return True, ""
