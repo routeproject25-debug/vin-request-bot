@@ -303,6 +303,25 @@ def _append_location_value(existing: Optional[str], new_value: str) -> str:
     return "; ".join(locations) if locations else "—"
 
 
+def _pop_last_location_value(existing: Optional[str]) -> Tuple[str, Optional[str]]:
+    locations = _split_location_values(existing)
+    if not locations:
+        return "—", None
+    removed = locations.pop()
+    return ("; ".join(locations) if locations else "—"), removed
+
+
+def _build_location_actions_keyboard(include_skip: bool = False) -> ReplyKeyboardMarkup:
+    buttons = [
+        [KeyboardButton(text="➕ Додати ще пункт")],
+        [KeyboardButton(text="➖ Видалити останній пункт")],
+        [KeyboardButton(text="✅ Готово")],
+    ]
+    if include_skip:
+        buttons.append([KeyboardButton(text="Пропустити")])
+    return ReplyKeyboardMarkup(buttons, resize_keyboard=True, one_time_keyboard=True)
+
+
 def _should_skip_question(question_key: str, data: Dict[str, Any]) -> bool:
     # Пропускати big_bag_weight для всіх розмірів окрім Біг-бегу
     if question_key == "big_bag_weight" and data.get("size_type") != "Біг-бег":
@@ -1535,18 +1554,26 @@ async def handle_city_search_load(update: Update, context: ContextTypes.DEFAULT_
         await update.message.reply_text("Введіть запит для пошуку наступного населеного пункту:")
         return CITY_SEARCH_LOAD
 
+    if text == "➖ Видалити останній пункт":
+        new_value, removed = _pop_last_location_value(context.user_data.get("load_city"))
+        if not removed:
+            await update.message.reply_text(
+                "Немає пунктів для видалення.",
+                reply_markup=_build_location_actions_keyboard(include_skip=True),
+            )
+            return CITY_SEARCH_LOAD
+
+        context.user_data["load_city"] = new_value
+        await update.message.reply_text(
+            f"🗑 Видалено: {removed}\n\nПоточний список: {new_value}",
+            reply_markup=_build_location_actions_keyboard(include_skip=True),
+        )
+        return CITY_SEARCH_LOAD
+
     if context.user_data.pop("awaiting_manual_load_city", False):
         context.user_data["load_city"] = _append_location_value(context.user_data.get("load_city"), text)
         selected = context.user_data.get("load_city", "—")
-        keyboard = ReplyKeyboardMarkup(
-            [
-                [KeyboardButton(text="➕ Додати ще пункт")],
-                [KeyboardButton(text="✅ Готово")],
-                [KeyboardButton(text="Пропустити")],
-            ],
-            resize_keyboard=True,
-            one_time_keyboard=True,
-        )
+        keyboard = _build_location_actions_keyboard(include_skip=True)
         await update.message.reply_text(
             f"✅ Додано пункт завантаження: {text}\n\nПоточний список: {selected}",
             reply_markup=keyboard,
@@ -1637,6 +1664,22 @@ async def handle_city_select_load(update: Update, context: ContextTypes.DEFAULT_
         await update.message.reply_text("Введіть запит для пошуку наступного населеного пункту:")
         return CITY_SEARCH_LOAD
 
+    if text == "➖ Видалити останній пункт":
+        new_value, removed = _pop_last_location_value(context.user_data.get("load_city"))
+        if not removed:
+            await update.message.reply_text(
+                "Немає пунктів для видалення.",
+                reply_markup=_build_location_actions_keyboard(include_skip=True),
+            )
+            return CITY_SELECT_LOAD
+
+        context.user_data["load_city"] = new_value
+        await update.message.reply_text(
+            f"🗑 Видалено: {removed}\n\nПоточний список: {new_value}",
+            reply_markup=_build_location_actions_keyboard(include_skip=True),
+        )
+        return CITY_SELECT_LOAD
+
     if text == "Пропустити":
         context.user_data["load_city"] = "—"
         if context.user_data.get("editing_mode"):
@@ -1695,15 +1738,7 @@ async def handle_city_select_load(update: Update, context: ContextTypes.DEFAULT_
     except:
         pass
     
-    keyboard = ReplyKeyboardMarkup(
-        [
-            [KeyboardButton(text="➕ Додати ще пункт")],
-            [KeyboardButton(text="✅ Готово")],
-            [KeyboardButton(text="Пропустити")],
-        ],
-        resize_keyboard=True,
-        one_time_keyboard=True,
-    )
+    keyboard = _build_location_actions_keyboard(include_skip=True)
     await update.message.reply_text(
         f"Поточний список пунктів завантаження:\n{context.user_data.get('load_city', '—')}\n\nДодати ще чи завершити?",
         reply_markup=keyboard,
@@ -1734,17 +1769,26 @@ async def handle_city_search_unload(update: Update, context: ContextTypes.DEFAUL
         await update.message.reply_text("Введіть запит для пошуку наступного населеного пункту:")
         return CITY_SEARCH_UNLOAD
 
+    if text == "➖ Видалити останній пункт":
+        new_value, removed = _pop_last_location_value(context.user_data.get("unload_city"))
+        if not removed:
+            await update.message.reply_text(
+                "Немає пунктів для видалення.",
+                reply_markup=_build_location_actions_keyboard(),
+            )
+            return CITY_SEARCH_UNLOAD
+
+        context.user_data["unload_city"] = new_value
+        await update.message.reply_text(
+            f"🗑 Видалено: {removed}\n\nПоточний список: {new_value}",
+            reply_markup=_build_location_actions_keyboard(),
+        )
+        return CITY_SEARCH_UNLOAD
+
     if context.user_data.pop("awaiting_manual_unload_city", False):
         context.user_data["unload_city"] = _append_location_value(context.user_data.get("unload_city"), text)
         selected = context.user_data.get("unload_city", "—")
-        keyboard = ReplyKeyboardMarkup(
-            [
-                [KeyboardButton(text="➕ Додати ще пункт")],
-                [KeyboardButton(text="✅ Готово")],
-            ],
-            resize_keyboard=True,
-            one_time_keyboard=True,
-        )
+        keyboard = _build_location_actions_keyboard()
         await update.message.reply_text(
             f"✅ Додано пункт розвантаження: {text}\n\nПоточний список: {selected}",
             reply_markup=keyboard,
@@ -1814,6 +1858,22 @@ async def handle_city_select_unload(update: Update, context: ContextTypes.DEFAUL
     if text == "➕ Додати ще пункт":
         await update.message.reply_text("Введіть запит для пошуку наступного населеного пункту:")
         return CITY_SEARCH_UNLOAD
+
+    if text == "➖ Видалити останній пункт":
+        new_value, removed = _pop_last_location_value(context.user_data.get("unload_city"))
+        if not removed:
+            await update.message.reply_text(
+                "Немає пунктів для видалення.",
+                reply_markup=_build_location_actions_keyboard(),
+            )
+            return CITY_SELECT_UNLOAD
+
+        context.user_data["unload_city"] = new_value
+        await update.message.reply_text(
+            f"🗑 Видалено: {removed}\n\nПоточний список: {new_value}",
+            reply_markup=_build_location_actions_keyboard(),
+        )
+        return CITY_SELECT_UNLOAD
     
     if text == "⬅️ Назад":
         # В режимі редагування - повернутися до підтвердження
@@ -1854,14 +1914,7 @@ async def handle_city_select_unload(update: Update, context: ContextTypes.DEFAUL
     except:
         pass
     
-    keyboard = ReplyKeyboardMarkup(
-        [
-            [KeyboardButton(text="➕ Додати ще пункт")],
-            [KeyboardButton(text="✅ Готово")],
-        ],
-        resize_keyboard=True,
-        one_time_keyboard=True,
-    )
+    keyboard = _build_location_actions_keyboard()
     await update.message.reply_text(
         f"Поточний список пунктів розвантаження:\n{context.user_data.get('unload_city', '—')}\n\nДодати ще чи завершити?",
         reply_markup=keyboard,
