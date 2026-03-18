@@ -286,6 +286,23 @@ def _normalize_cargo_type(value: Optional[str]) -> Optional[str]:
     return text
 
 
+def _split_location_values(value: Optional[str]) -> List[str]:
+    if not value:
+        return []
+    text = str(value).strip()
+    if not text or text == "—":
+        return []
+    return [part.strip() for part in text.split(";") if part.strip()]
+
+
+def _append_location_value(existing: Optional[str], new_value: str) -> str:
+    locations = _split_location_values(existing)
+    candidate = (new_value or "").strip()
+    if candidate and candidate not in locations:
+        locations.append(candidate)
+    return "; ".join(locations) if locations else "—"
+
+
 def _should_skip_question(question_key: str, data: Dict[str, Any]) -> bool:
     # Пропускати big_bag_weight для всіх розмірів окрім Біг-бегу
     if question_key == "big_bag_weight" and data.get("size_type") != "Біг-бег":
@@ -1499,6 +1516,43 @@ async def handle_city_search_load(update: Update, context: ContextTypes.DEFAULT_
     """Обробка введення пошукового запиту для населеного пункту завантаження"""
     text = (update.message.text or "").strip()
 
+    if text == "✅ Готово":
+        selected = _split_location_values(context.user_data.get("load_city"))
+        if selected:
+            if context.user_data.get("editing_mode"):
+                context.user_data.pop("editing_mode", None)
+                context.user_data["question_index"] = len(QUESTIONS)
+                return await ask_question(update, context)
+
+            index = context.user_data.get("question_index", 0)
+            context.user_data["question_index"] = index + 1
+            return await ask_question(update, context)
+
+        await update.message.reply_text("Додайте хоча б один пункт або натисніть 'Пропустити'.")
+        return CITY_SEARCH_LOAD
+
+    if text == "➕ Додати ще пункт":
+        await update.message.reply_text("Введіть запит для пошуку наступного населеного пункту:")
+        return CITY_SEARCH_LOAD
+
+    if context.user_data.pop("awaiting_manual_load_city", False):
+        context.user_data["load_city"] = _append_location_value(context.user_data.get("load_city"), text)
+        selected = context.user_data.get("load_city", "—")
+        keyboard = ReplyKeyboardMarkup(
+            [
+                [KeyboardButton(text="➕ Додати ще пункт")],
+                [KeyboardButton(text="✅ Готово")],
+                [KeyboardButton(text="Пропустити")],
+            ],
+            resize_keyboard=True,
+            one_time_keyboard=True,
+        )
+        await update.message.reply_text(
+            f"✅ Додано пункт завантаження: {text}\n\nПоточний список: {selected}",
+            reply_markup=keyboard,
+        )
+        return CITY_SEARCH_LOAD
+
     if text == "Пропустити":
         context.user_data["load_city"] = "—"
         if context.user_data.get("editing_mode"):
@@ -1564,6 +1618,25 @@ async def handle_city_select_load(update: Update, context: ContextTypes.DEFAULT_
     """Обробка вибору населеного пункту завантаження"""
     text = (update.message.text or "").strip()
 
+    if text == "✅ Готово":
+        selected = _split_location_values(context.user_data.get("load_city"))
+        if selected:
+            if context.user_data.get("editing_mode"):
+                context.user_data.pop("editing_mode", None)
+                context.user_data["question_index"] = len(QUESTIONS)
+                return await ask_question(update, context)
+
+            index = context.user_data.get("question_index", 0)
+            context.user_data["question_index"] = index + 1
+            return await ask_question(update, context)
+
+        await update.message.reply_text("Додайте хоча б один пункт або натисніть 'Пропустити'.")
+        return CITY_SELECT_LOAD
+
+    if text == "➕ Додати ще пункт":
+        await update.message.reply_text("Введіть запит для пошуку наступного населеного пункту:")
+        return CITY_SEARCH_LOAD
+
     if text == "Пропустити":
         context.user_data["load_city"] = "—"
         if context.user_data.get("editing_mode"):
@@ -1596,6 +1669,7 @@ async def handle_city_select_load(update: Update, context: ContextTypes.DEFAULT_
         return await ask_question(update, context)
     
     if text == "✍️ Ввести вручну":
+        context.user_data["awaiting_manual_load_city"] = True
         await update.message.reply_text(
             "Введіть назву населеного пункту вручну:",
             reply_markup=ReplyKeyboardRemove()
@@ -1603,7 +1677,7 @@ async def handle_city_select_load(update: Update, context: ContextTypes.DEFAULT_
         return CITY_SEARCH_LOAD
     
     # Зберегти вибране місто
-    context.user_data["load_city"] = text
+    context.user_data["load_city"] = _append_location_value(context.user_data.get("load_city"), text)
     
     # Видалити повідомлення та перейти до наступного питання
     try:
@@ -1621,23 +1695,61 @@ async def handle_city_select_load(update: Update, context: ContextTypes.DEFAULT_
     except:
         pass
     
-    if context.user_data.get("editing_mode"):
-        context.user_data.pop("editing_mode", None)
-        context.user_data["question_index"] = len(QUESTIONS)
-        await update.message.reply_text(
-            f"✅ Змінено на '{text}'",
-            reply_markup=ReplyKeyboardRemove(),
-        )
-        return await ask_question(update, context)
-    
-    index = context.user_data.get("question_index", 0)
-    context.user_data["question_index"] = index + 1
-    return await ask_question(update, context)
+    keyboard = ReplyKeyboardMarkup(
+        [
+            [KeyboardButton(text="➕ Додати ще пункт")],
+            [KeyboardButton(text="✅ Готово")],
+            [KeyboardButton(text="Пропустити")],
+        ],
+        resize_keyboard=True,
+        one_time_keyboard=True,
+    )
+    await update.message.reply_text(
+        f"Поточний список пунктів завантаження:\n{context.user_data.get('load_city', '—')}\n\nДодати ще чи завершити?",
+        reply_markup=keyboard,
+    )
+    return CITY_SEARCH_LOAD
 
 
 async def handle_city_search_unload(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Обробка введення пошукового запиту для населеного пункту розвантаження"""
     text = (update.message.text or "").strip()
+
+    if text == "✅ Готово":
+        selected = _split_location_values(context.user_data.get("unload_city"))
+        if selected:
+            if context.user_data.get("editing_mode"):
+                context.user_data.pop("editing_mode", None)
+                context.user_data["question_index"] = len(QUESTIONS)
+                return await ask_question(update, context)
+
+            index = context.user_data.get("question_index", 0)
+            context.user_data["question_index"] = index + 1
+            return await ask_question(update, context)
+
+        await update.message.reply_text("Додайте хоча б один пункт розвантаження.")
+        return CITY_SEARCH_UNLOAD
+
+    if text == "➕ Додати ще пункт":
+        await update.message.reply_text("Введіть запит для пошуку наступного населеного пункту:")
+        return CITY_SEARCH_UNLOAD
+
+    if context.user_data.pop("awaiting_manual_unload_city", False):
+        context.user_data["unload_city"] = _append_location_value(context.user_data.get("unload_city"), text)
+        selected = context.user_data.get("unload_city", "—")
+        keyboard = ReplyKeyboardMarkup(
+            [
+                [KeyboardButton(text="➕ Додати ще пункт")],
+                [KeyboardButton(text="✅ Готово")],
+            ],
+            resize_keyboard=True,
+            one_time_keyboard=True,
+        )
+        await update.message.reply_text(
+            f"✅ Додано пункт розвантаження: {text}\n\nПоточний список: {selected}",
+            reply_markup=keyboard,
+        )
+        return CITY_SEARCH_UNLOAD
     
     if text == "⬅️ Назад":
         # В режимі редагування - повернутися до підтвердження
@@ -1683,6 +1795,25 @@ async def handle_city_search_unload(update: Update, context: ContextTypes.DEFAUL
 async def handle_city_select_unload(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Обробка вибору населеного пункту розвантаження"""
     text = (update.message.text or "").strip()
+
+    if text == "✅ Готово":
+        selected = _split_location_values(context.user_data.get("unload_city"))
+        if selected:
+            if context.user_data.get("editing_mode"):
+                context.user_data.pop("editing_mode", None)
+                context.user_data["question_index"] = len(QUESTIONS)
+                return await ask_question(update, context)
+
+            index = context.user_data.get("question_index", 0)
+            context.user_data["question_index"] = index + 1
+            return await ask_question(update, context)
+
+        await update.message.reply_text("Додайте хоча б один пункт розвантаження.")
+        return CITY_SELECT_UNLOAD
+
+    if text == "➕ Додати ще пункт":
+        await update.message.reply_text("Введіть запит для пошуку наступного населеного пункту:")
+        return CITY_SEARCH_UNLOAD
     
     if text == "⬅️ Назад":
         # В режимі редагування - повернутися до підтвердження
@@ -1697,6 +1828,7 @@ async def handle_city_select_unload(update: Update, context: ContextTypes.DEFAUL
         return await ask_question(update, context)
     
     if text == "✍️ Ввести вручну":
+        context.user_data["awaiting_manual_unload_city"] = True
         await update.message.reply_text(
             "Введіть назву населеного пункту вручну:",
             reply_markup=ReplyKeyboardRemove()
@@ -1704,7 +1836,7 @@ async def handle_city_select_unload(update: Update, context: ContextTypes.DEFAUL
         return CITY_SEARCH_UNLOAD
     
     # Зберегти вибране місто
-    context.user_data["unload_city"] = text
+    context.user_data["unload_city"] = _append_location_value(context.user_data.get("unload_city"), text)
     
     # Видалити повідомлення та перейти до наступного питання
     try:
@@ -1722,18 +1854,19 @@ async def handle_city_select_unload(update: Update, context: ContextTypes.DEFAUL
     except:
         pass
     
-    if context.user_data.get("editing_mode"):
-        context.user_data.pop("editing_mode", None)
-        context.user_data["question_index"] = len(QUESTIONS)
-        await update.message.reply_text(
-            f"✅ Змінено на '{text}'",
-            reply_markup=ReplyKeyboardRemove(),
-        )
-        return await ask_question(update, context)
-    
-    index = context.user_data.get("question_index", 0)
-    context.user_data["question_index"] = index + 1
-    return await ask_question(update, context)
+    keyboard = ReplyKeyboardMarkup(
+        [
+            [KeyboardButton(text="➕ Додати ще пункт")],
+            [KeyboardButton(text="✅ Готово")],
+        ],
+        resize_keyboard=True,
+        one_time_keyboard=True,
+    )
+    await update.message.reply_text(
+        f"Поточний список пунктів розвантаження:\n{context.user_data.get('unload_city', '—')}\n\nДодати ще чи завершити?",
+        reply_markup=keyboard,
+    )
+    return CITY_SEARCH_UNLOAD
 
 
 async def show_edit_fields(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
