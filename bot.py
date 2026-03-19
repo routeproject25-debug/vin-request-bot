@@ -971,6 +971,20 @@ async def ask_question(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     
     # Якщо це питання про населений пункт - запускаємо пошук
     if question.get("use_city_search"):
+        # У режимі редагування починаємо зміну НП з чистого списку,
+        # але залишаємо можливість додавати ще пункти в цьому ж потоці.
+        if context.user_data.get("editing_mode") and question.get("key") == "load_city":
+            if not context.user_data.get("load_city_edit_reset_done"):
+                context.user_data["load_city_edit_original"] = context.user_data.get("load_city", "—")
+                context.user_data["load_city"] = "—"
+                context.user_data["load_city_edit_reset_done"] = True
+
+        if context.user_data.get("editing_mode") and question.get("key") == "unload_city":
+            if not context.user_data.get("unload_city_edit_reset_done"):
+                context.user_data["unload_city_edit_original"] = context.user_data.get("unload_city", "—")
+                context.user_data["unload_city"] = "—"
+                context.user_data["unload_city_edit_reset_done"] = True
+
         if question.get("key") == "unload_city":
             context.user_data.pop("unload_distribution", None)
             context.user_data.pop("unload_distribution_cities", None)
@@ -1648,6 +1662,9 @@ async def _ask_unload_distribution_prompt(update: Update, context: ContextTypes.
 
 
 async def _finish_unload_city_step(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    context.user_data.pop("unload_city_edit_reset_done", None)
+    context.user_data.pop("unload_city_edit_original", None)
+
     selected = _split_location_values(context.user_data.get("unload_city"))
 
     # Для одного НП розподіл не потрібен.
@@ -1763,6 +1780,8 @@ async def handle_city_search_load(update: Update, context: ContextTypes.DEFAULT_
     if text == "✅ Готово":
         selected = _split_location_values(context.user_data.get("load_city"))
         if selected:
+            context.user_data.pop("load_city_edit_reset_done", None)
+            context.user_data.pop("load_city_edit_original", None)
             if context.user_data.get("editing_mode"):
                 context.user_data.pop("editing_mode", None)
                 context.user_data["question_index"] = len(QUESTIONS)
@@ -1807,6 +1826,8 @@ async def handle_city_search_load(update: Update, context: ContextTypes.DEFAULT_
 
     if text == "Пропустити":
         context.user_data["load_city"] = "—"
+        context.user_data.pop("load_city_edit_reset_done", None)
+        context.user_data.pop("load_city_edit_original", None)
         if context.user_data.get("editing_mode"):
             context.user_data.pop("editing_mode", None)
             context.user_data["question_index"] = len(QUESTIONS)
@@ -1827,6 +1848,10 @@ async def handle_city_search_load(update: Update, context: ContextTypes.DEFAULT_
     if text == "⬅️ Назад":
         # В режимі редагування - повернутися до підтвердження
         if context.user_data.get("editing_mode"):
+            original = context.user_data.pop("load_city_edit_original", None)
+            if original is not None:
+                context.user_data["load_city"] = original
+            context.user_data.pop("load_city_edit_reset_done", None)
             context.user_data.pop("editing_mode", None)
             context.user_data["question_index"] = len(QUESTIONS)
             return await ask_question(update, context)
@@ -1873,6 +1898,8 @@ async def handle_city_select_load(update: Update, context: ContextTypes.DEFAULT_
     if text == "✅ Готово":
         selected = _split_location_values(context.user_data.get("load_city"))
         if selected:
+            context.user_data.pop("load_city_edit_reset_done", None)
+            context.user_data.pop("load_city_edit_original", None)
             if context.user_data.get("editing_mode"):
                 context.user_data.pop("editing_mode", None)
                 context.user_data["question_index"] = len(QUESTIONS)
@@ -1907,6 +1934,8 @@ async def handle_city_select_load(update: Update, context: ContextTypes.DEFAULT_
 
     if text == "Пропустити":
         context.user_data["load_city"] = "—"
+        context.user_data.pop("load_city_edit_reset_done", None)
+        context.user_data.pop("load_city_edit_original", None)
         if context.user_data.get("editing_mode"):
             context.user_data.pop("editing_mode", None)
             context.user_data["question_index"] = len(QUESTIONS)
@@ -1927,6 +1956,10 @@ async def handle_city_select_load(update: Update, context: ContextTypes.DEFAULT_
     if text == "⬅️ Назад":
         # В режимі редагування - повернутися до підтвердження
         if context.user_data.get("editing_mode"):
+            original = context.user_data.pop("load_city_edit_original", None)
+            if original is not None:
+                context.user_data["load_city"] = original
+            context.user_data.pop("load_city_edit_reset_done", None)
             context.user_data.pop("editing_mode", None)
             context.user_data["question_index"] = len(QUESTIONS)
             return await ask_question(update, context)
@@ -2016,6 +2049,10 @@ async def handle_city_search_unload(update: Update, context: ContextTypes.DEFAUL
     if text == "⬅️ Назад":
         # В режимі редагування - повернутися до підтвердження
         if context.user_data.get("editing_mode"):
+            original = context.user_data.pop("unload_city_edit_original", None)
+            if original is not None:
+                context.user_data["unload_city"] = original
+            context.user_data.pop("unload_city_edit_reset_done", None)
             context.user_data.pop("editing_mode", None)
             context.user_data["question_index"] = len(QUESTIONS)
             return await ask_question(update, context)
@@ -2089,6 +2126,10 @@ async def handle_city_select_unload(update: Update, context: ContextTypes.DEFAUL
     if text == "⬅️ Назад":
         # В режимі редагування - повернутися до підтвердження
         if context.user_data.get("editing_mode"):
+            original = context.user_data.pop("unload_city_edit_original", None)
+            if original is not None:
+                context.user_data["unload_city"] = original
+            context.user_data.pop("unload_city_edit_reset_done", None)
             context.user_data.pop("editing_mode", None)
             context.user_data["question_index"] = len(QUESTIONS)
             return await ask_question(update, context)
