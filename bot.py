@@ -340,6 +340,18 @@ def _format_volume_for_size(size_type: str, value: float) -> str:
     return f"{_format_number(value)} {unit}"
 
 
+def _build_distribution_actions_keyboard() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        [
+            [KeyboardButton(text="✏️ Змінити загальний обсяг")],
+            [KeyboardButton(text="🔁 Переввести розподіл")],
+            [KeyboardButton(text="⬅️ Назад")],
+        ],
+        resize_keyboard=True,
+        one_time_keyboard=True,
+    )
+
+
 def _resolve_parent_request_id(request_id: str) -> str:
     rid = (request_id or "").strip().upper()
     if not rid:
@@ -1642,7 +1654,7 @@ async def _ask_unload_distribution_prompt(update: Update, context: ContextTypes.
     remaining = float(total) - allocated_sum
     size_type = context.user_data.get("size_type", "")
     total_text = _format_volume_for_size(size_type, float(total))
-    remaining_text = _format_volume_for_size(size_type, max(remaining, 0.0))
+    remaining_text = _format_volume_for_size(size_type, remaining)
 
     keyboard = ReplyKeyboardMarkup(
         [[KeyboardButton(text="⬅️ Назад")]],
@@ -1657,6 +1669,68 @@ async def _ask_unload_distribution_prompt(update: Update, context: ContextTypes.
         f"Залишок до розподілу: {remaining_text}\n\n"
         f"Вкажіть кількість для цього НП (тільки число):",
         reply_markup=keyboard,
+    )
+    return UNLOAD_DISTRIBUTION
+
+
+async def _finalize_unload_distribution(update: Update, context: ContextTypes.DEFAULT_TYPE, allocations: Dict[str, Any]) -> int:
+    size_type = context.user_data.get("size_type", "")
+    summary_lines = [
+        f"• {city}: {_format_volume_for_size(size_type, float(amount))}"
+        for city, amount in allocations.items()
+    ]
+    await update.message.reply_text(
+        "✅ Розподіл за НП збережено:\n" + "\n".join(summary_lines),
+        reply_markup=ReplyKeyboardRemove(),
+    )
+
+    context.user_data.pop("unload_distribution_awaiting_total", None)
+
+    if context.user_data.get("editing_mode"):
+        context.user_data.pop("editing_mode", None)
+        context.user_data["question_index"] = len(QUESTIONS)
+    else:
+        index = context.user_data.get("question_index", 0)
+        context.user_data["question_index"] = index + 1
+
+    return await ask_question(update, context)
+
+
+async def _review_unload_distribution(update: Update, context: ContextTypes.DEFAULT_TYPE, allocations: Dict[str, Any]) -> int:
+    cities = context.user_data.get("unload_distribution_cities") or []
+    total = float(context.user_data.get("unload_distribution_total", 0) or 0)
+    size_type = context.user_data.get("size_type", "")
+
+    ordered_allocations = {city: float(allocations.get(city, 0.0)) for city in cities}
+    allocated_sum = sum(ordered_allocations.values())
+    delta = total - allocated_sum
+
+    context.user_data["unload_distribution"] = ordered_allocations
+    context.user_data["unload_distribution_idx"] = len(cities)
+
+    lines = [
+        f"• {city}: {_format_volume_for_size(size_type, amount)}"
+        for city, amount in ordered_allocations.items()
+    ]
+
+    summary = (
+        "📊 Перевірка розподілу:\n"
+        + "\n".join(lines)
+        + "\n\n"
+        + f"Загальний обсяг: {_format_volume_for_size(size_type, total)}\n"
+        + f"Сума по НП: {_format_volume_for_size(size_type, allocated_sum)}\n"
+        + f"Різниця (має бути 0): {_format_volume_for_size(size_type, delta)}"
+    )
+
+    if abs(delta) <= 1e-9:
+        await update.message.reply_text(summary)
+        return await _finalize_unload_distribution(update, context, ordered_allocations)
+
+    await update.message.reply_text(
+        summary + "\n\n"
+        "❗ Різниця не 0.\n"
+        "Можна змінити загальний обсяг або переввести розподіл, щоб зійшлося в 0.",
+        reply_markup=_build_distribution_actions_keyboard(),
     )
     return UNLOAD_DISTRIBUTION
 
@@ -1712,6 +1786,27 @@ async def handle_unload_distribution(update: Update, context: ContextTypes.DEFAU
     if not cities or total <= 0:
         return await _finish_unload_city_step(update, context)
 
+    if text == "✏️ Змінити загальний обсяг":
+        context.user_data["unload_distribution_awaiting_total"] = True
+        await update.message.reply_text("Введіть новий загальний обсяг (тільки число):")
+        return UNLOAD_DISTRIBUTION
+
+    if text == "🔁 Переввести розподіл":
+        context.user_data["unload_distribution"] = {}
+        context.user_data["unload_distribution_idx"] = 0
+        context.user_data.pop("unload_distribution_awaiting_total", None)
+        return await _ask_unload_distribution_prompt(update, context)
+
+    if context.user_data.get("unload_distribution_awaiting_total"):
+        new_total = _to_float(text)
+        if new_total is None or new_total <= 0:
+            await update.message.reply_text("❌ Введіть коректне число більше 0.")
+            return UNLOAD_DISTRIBUTION
+
+        context.user_data["unload_distribution_total"] = float(new_total)
+        context.user_data.pop("unload_distribution_awaiting_total", None)
+        return await _review_unload_distribution(update, context, allocations)
+
     if text == "⬅️ Назад":
         if idx <= 0:
             await update.message.reply_text("Повертаю до вибору НП розвантаження.")
@@ -1729,22 +1824,6 @@ async def handle_unload_distribution(update: Update, context: ContextTypes.DEFAU
         return UNLOAD_DISTRIBUTION
 
     current_city = cities[idx]
-    allocated_sum = sum(float(v) for v in allocations.values())
-    remaining = total - allocated_sum
-    is_last = idx == len(cities) - 1
-
-    if value - remaining > 1e-9:
-        await update.message.reply_text(
-            f"❌ Значення більше за залишок. Доступно: {_format_number(max(remaining, 0.0))}"
-        )
-        return UNLOAD_DISTRIBUTION
-
-    if is_last and abs(value - remaining) > 1e-9:
-        await update.message.reply_text(
-            f"❌ Для останнього НП потрібно вказати рівно залишок: {_format_number(max(remaining, 0.0))}"
-        )
-        return UNLOAD_DISTRIBUTION
-
     allocations[current_city] = value
     context.user_data["unload_distribution"] = allocations
     context.user_data["unload_distribution_idx"] = idx + 1
@@ -1752,25 +1831,7 @@ async def handle_unload_distribution(update: Update, context: ContextTypes.DEFAU
     if idx + 1 < len(cities):
         return await _ask_unload_distribution_prompt(update, context)
 
-    # Розподіл завершено.
-    size_type = context.user_data.get("size_type", "")
-    summary_lines = [
-        f"• {city}: {_format_volume_for_size(size_type, float(amount))}"
-        for city, amount in allocations.items()
-    ]
-    await update.message.reply_text(
-        "✅ Розподіл за НП збережено:\n" + "\n".join(summary_lines),
-        reply_markup=ReplyKeyboardRemove(),
-    )
-
-    if context.user_data.get("editing_mode"):
-        context.user_data.pop("editing_mode", None)
-        context.user_data["question_index"] = len(QUESTIONS)
-    else:
-        index = context.user_data.get("question_index", 0)
-        context.user_data["question_index"] = index + 1
-
-    return await ask_question(update, context)
+    return await _review_unload_distribution(update, context, allocations)
 
 
 async def handle_city_search_load(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
