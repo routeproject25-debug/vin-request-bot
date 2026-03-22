@@ -395,13 +395,13 @@ def _resolve_parent_request_id(request_id: str) -> str:
     return head if tail.isdigit() else rid
 
 
-def _parse_child_request_id(request_id: str) -> Tuple[str, Optional[int]]:
+def _parse_child_request_id(request_id: str) -> Optional[Tuple[str, int]]:
     rid = (request_id or "").strip().upper()
     if "-" not in rid:
-        return rid, None
+        return None
     head, tail = rid.rsplit("-", 1)
     if not tail.isdigit():
-        return rid, None
+        return None
     return head, int(tail)
 
 
