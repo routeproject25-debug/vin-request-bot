@@ -186,10 +186,38 @@ def _apply_logist_and_execution_validations(
         if row_id:
             row_by_id[row_id] = row_number
 
-    sheet_id = worksheet.id
     logists = _get_logists_list()
-    one_of_list_values = [{"userEnteredValue": name} for name in logists]
+    validation_enum = getattr(gspread, "ValidationConditionType", None)
 
+    # Основний шлях: вбудований API gspread для валідацій (надійніше для dropdown).
+    if validation_enum is not None:
+        for rid in unique_ids:
+            row_number = row_by_id.get(rid)
+            if not row_number:
+                continue
+
+            logist_cell = f"{_column_to_letter(logist_idx + 1)}{row_number}"
+            execution_cell = f"{_column_to_letter(execution_idx + 1)}{row_number}"
+
+            worksheet.add_validation(
+                logist_cell,
+                validation_enum.one_of_list,
+                logists,
+                strict=True,
+                showCustomUi=True,
+            )
+            worksheet.add_validation(
+                execution_cell,
+                validation_enum.boolean,
+                [],
+                strict=True,
+                showCustomUi=True,
+            )
+        return
+
+    # Fallback: прямий batch_update через Sheets API.
+    sheet_id = worksheet.id
+    one_of_list_values = [{"userEnteredValue": name} for name in logists]
     requests = []
     for rid in unique_ids:
         row_number = row_by_id.get(rid)
