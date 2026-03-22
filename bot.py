@@ -212,6 +212,48 @@ def _is_private_chat(update: Update) -> bool:
     return _chat_type(update) == "private"
 
 
+def _is_admin_user(user) -> bool:
+    """Check if current user is configured as bot admin."""
+    if not user:
+        return False
+
+    admin_ids_raw = (os.getenv("ADMIN_USER_IDS") or "").strip()
+    admin_ids: set = set()
+    if admin_ids_raw:
+        for token in re.split(r"[,;\s]+", admin_ids_raw):
+            token = token.strip()
+            if not token:
+                continue
+            try:
+                admin_ids.add(int(token))
+            except ValueError:
+                continue
+
+    # backward compatibility: existing single ADMIN_USER_ID
+    legacy_admin_id = (os.getenv("ADMIN_USER_ID") or "").strip()
+    if legacy_admin_id:
+        try:
+            admin_ids.add(int(legacy_admin_id))
+        except ValueError:
+            pass
+
+    if admin_ids and int(getattr(user, "id", 0)) in admin_ids:
+        return True
+
+    admin_usernames_raw = (os.getenv("ADMIN_USERNAMES") or "").strip()
+    if admin_usernames_raw:
+        admin_usernames = {
+            item.strip().lstrip("@").lower()
+            for item in re.split(r"[,;\s]+", admin_usernames_raw)
+            if item.strip()
+        }
+        username = (getattr(user, "username", "") or "").strip().lstrip("@").lower()
+        if username and username in admin_usernames:
+            return True
+
+    return False
+
+
 async def _send_private_only_notice(update: Update) -> None:
     message = getattr(update, "message", None)
     if not message:
@@ -3393,7 +3435,7 @@ async def handle_request_action_callback(update: Update, context: ContextTypes.D
         await query.answer("Заявку не знайдено", show_alert=True)
         return START
 
-    if int(request.get("user_id", 0)) != int(user.id if user else 0):
+    if int(request.get("user_id", 0)) != int(user.id if user else 0) and not _is_admin_user(user):
         await query.answer("Можна керувати тільки власними заявками", show_alert=True)
         return START
 
@@ -3645,7 +3687,7 @@ async def edit_request_command(update: Update, context: ContextTypes.DEFAULT_TYP
         await update.message.reply_text(f"❌ Заявку з ID {request_id} не знайдено")
         return START
 
-    if int(request.get("user_id", 0)) != int(user.id):
+    if int(request.get("user_id", 0)) != int(user.id) and not _is_admin_user(user):
         await update.message.reply_text("❌ Ви можете редагувати лише власні заявки")
         return START
 
