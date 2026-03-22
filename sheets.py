@@ -9,12 +9,6 @@ import pytz
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_LOGISTS = [
-    "Нетудихата К.",
-    "Покотило Д.",
-    "Тимошенко Ю.",
-]
-
 # Scope для Google Sheets API
 SCOPES = [
     'https://www.googleapis.com/auth/spreadsheets',
@@ -141,48 +135,24 @@ def _format_volume_with_unit(size_type: str, volume_value: Any) -> str:
     return _format_number_with_comma(numeric)
 
 
-def _get_logists_list() -> List[str]:
-    """Return logist names sorted alphabetically from env or defaults."""
-    env_value = (os.getenv("LOGISTS_LIST") or "").strip()
-    if env_value:
-        raw_items = re.split(r"[,;\n]", env_value)
-        items = [item.strip() for item in raw_items if item.strip()]
-        if items:
-            return sorted(items, key=str.casefold)
-    return sorted(DEFAULT_LOGISTS, key=str.casefold)
-
-
-def _apply_logist_and_execution_validations(
+def _apply_execution_validation(
     worksheet,
     header_map: Dict[str, int],
-    target_row_ids: List[str],
 ) -> None:
-    """Apply logist dropdown and execution checkbox for full columns."""
-    logist_idx = header_map.get("Логіст")
+    """Apply execution checkbox validation for full column."""
     execution_idx = header_map.get("Виконання")
-    id_idx = header_map.get("ID заявки")
-    if logist_idx is None or execution_idx is None or id_idx is None:
+    if execution_idx is None:
         return
 
-    # Валідації ставимо на всю колонку (з 2-го рядка), щоб dropdown/checkbox були завжди.
+    # Валідацію ставимо на всю колонку (з 2-го рядка), щоб checkbox був завжди.
     last_row = max(worksheet.row_count, 2)
-    logist_col = _column_to_letter(logist_idx + 1)
     execution_col = _column_to_letter(execution_idx + 1)
-    logist_range_a1 = f"{logist_col}2:{logist_col}{last_row}"
     execution_range_a1 = f"{execution_col}2:{execution_col}{last_row}"
 
-    logists = _get_logists_list()
     validation_enum = getattr(gspread, "ValidationConditionType", None)
 
-    # Основний шлях: вбудований API gspread для валідацій (надійніше для dropdown).
+    # Основний шлях: вбудований API gspread для валідації чекбоксу.
     if validation_enum is not None:
-        worksheet.add_validation(
-            logist_range_a1,
-            validation_enum.one_of_list,
-            logists,
-            strict=True,
-            showCustomUi=True,
-        )
         worksheet.add_validation(
             execution_range_a1,
             validation_enum.boolean,
@@ -194,27 +164,7 @@ def _apply_logist_and_execution_validations(
 
     # Fallback: прямий batch_update через Sheets API.
     sheet_id = worksheet.id
-    one_of_list_values = [{"userEnteredValue": name} for name in logists]
     requests = [
-        {
-            "setDataValidation": {
-                "range": {
-                    "sheetId": sheet_id,
-                    "startRowIndex": 1,
-                    "endRowIndex": last_row,
-                    "startColumnIndex": logist_idx,
-                    "endColumnIndex": logist_idx + 1,
-                },
-                "rule": {
-                    "condition": {
-                        "type": "ONE_OF_LIST",
-                        "values": one_of_list_values,
-                    },
-                    "strict": True,
-                    "showCustomUi": True,
-                },
-            }
-        },
         {
             "setDataValidation": {
                 "range": {
@@ -483,22 +433,16 @@ def export_to_sheets(data: Dict[str, Any]) -> Tuple[bool, str]:
             if row_id:
                 existing_by_id[row_id] = row_number
 
-        logist_idx = header_map.get("Логіст")
         execution_idx = header_map.get("Виконання")
 
-        target_row_ids: List[str] = []
         for row in rows:
             row_id = ""
             if id_idx < len(row):
                 row_id = (str(row[id_idx]) or "").strip().upper()
-                if row_id:
-                    target_row_ids.append(row_id)
 
             if row_id and row_id in existing_by_id:
                 row_number = existing_by_id[row_id]
                 safe_row = [_safe_sheet_value(value) for value in row]
-                if logist_idx is not None and logist_idx < len(safe_row):
-                    safe_row[logist_idx] = ""
                 if execution_idx is not None and execution_idx < len(safe_row):
                     safe_row[execution_idx] = ""
                 end_col_letter = _column_to_letter(len(safe_row))
@@ -509,16 +453,14 @@ def export_to_sheets(data: Dict[str, Any]) -> Tuple[bool, str]:
                 )
             else:
                 safe_row = [_safe_sheet_value(value) for value in row]
-                if logist_idx is not None and logist_idx < len(safe_row):
-                    safe_row[logist_idx] = ""
                 if execution_idx is not None and execution_idx < len(safe_row):
                     safe_row[execution_idx] = ""
                 worksheet.insert_row(safe_row, index=2, value_input_option='USER_ENTERED')
 
         try:
-            _apply_logist_and_execution_validations(worksheet, header_map, target_row_ids)
+            _apply_execution_validation(worksheet, header_map)
         except Exception as e:
-            logger.warning(f"Failed to apply logist/execution validations: {e}")
+            logger.warning(f"Failed to apply execution validation: {e}")
         
         logger.info(f"✅ Successfully exported request to Google Sheets (spreadsheet: {spreadsheet_id})")
         return True, ""
