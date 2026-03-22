@@ -152,110 +152,89 @@ def _get_logists_list() -> List[str]:
     return sorted(DEFAULT_LOGISTS, key=str.casefold)
 
 
-def _build_grid_range(sheet_id: int, row_number: int, col_index_zero_based: int) -> Dict[str, int]:
-    """Build Google Sheets GridRange for a single cell."""
-    return {
-        "sheetId": sheet_id,
-        "startRowIndex": row_number - 1,
-        "endRowIndex": row_number,
-        "startColumnIndex": col_index_zero_based,
-        "endColumnIndex": col_index_zero_based + 1,
-    }
-
-
 def _apply_logist_and_execution_validations(
     worksheet,
     header_map: Dict[str, int],
     target_row_ids: List[str],
 ) -> None:
-    """Apply logist dropdown and execution checkbox for target rows."""
+    """Apply logist dropdown and execution checkbox for full columns."""
     logist_idx = header_map.get("Логіст")
     execution_idx = header_map.get("Виконання")
     id_idx = header_map.get("ID заявки")
     if logist_idx is None or execution_idx is None or id_idx is None:
         return
 
-    unique_ids = [rid for rid in dict.fromkeys(target_row_ids) if rid]
-    if not unique_ids:
-        return
-
-    id_column_values = worksheet.col_values(id_idx + 1)
-    row_by_id: Dict[str, int] = {}
-    for row_number in range(2, len(id_column_values) + 1):
-        row_id = (id_column_values[row_number - 1] or "").strip().upper()
-        if row_id:
-            row_by_id[row_id] = row_number
+    # Валідації ставимо на всю колонку (з 2-го рядка), щоб dropdown/checkbox були завжди.
+    last_row = max(worksheet.row_count, 2)
+    logist_col = _column_to_letter(logist_idx + 1)
+    execution_col = _column_to_letter(execution_idx + 1)
+    logist_range_a1 = f"{logist_col}2:{logist_col}{last_row}"
+    execution_range_a1 = f"{execution_col}2:{execution_col}{last_row}"
 
     logists = _get_logists_list()
     validation_enum = getattr(gspread, "ValidationConditionType", None)
 
     # Основний шлях: вбудований API gspread для валідацій (надійніше для dropdown).
     if validation_enum is not None:
-        for rid in unique_ids:
-            row_number = row_by_id.get(rid)
-            if not row_number:
-                continue
-
-            logist_cell = f"{_column_to_letter(logist_idx + 1)}{row_number}"
-            execution_cell = f"{_column_to_letter(execution_idx + 1)}{row_number}"
-
-            worksheet.add_validation(
-                logist_cell,
-                validation_enum.one_of_list,
-                logists,
-                strict=True,
-                showCustomUi=True,
-            )
-            worksheet.add_validation(
-                execution_cell,
-                validation_enum.boolean,
-                [],
-                strict=True,
-                showCustomUi=True,
-            )
+        worksheet.add_validation(
+            logist_range_a1,
+            validation_enum.one_of_list,
+            logists,
+            strict=True,
+            showCustomUi=True,
+        )
+        worksheet.add_validation(
+            execution_range_a1,
+            validation_enum.boolean,
+            [],
+            strict=True,
+            showCustomUi=True,
+        )
         return
 
     # Fallback: прямий batch_update через Sheets API.
     sheet_id = worksheet.id
     one_of_list_values = [{"userEnteredValue": name} for name in logists]
-    requests = []
-    for rid in unique_ids:
-        row_number = row_by_id.get(rid)
-        if not row_number:
-            continue
-
-        requests.append(
-            {
-                "setDataValidation": {
-                    "range": _build_grid_range(sheet_id, row_number, logist_idx),
-                    "rule": {
-                        "condition": {
-                            "type": "ONE_OF_LIST",
-                            "values": one_of_list_values,
-                        },
-                        "strict": True,
-                        "showCustomUi": True,
+    requests = [
+        {
+            "setDataValidation": {
+                "range": {
+                    "sheetId": sheet_id,
+                    "startRowIndex": 1,
+                    "endRowIndex": last_row,
+                    "startColumnIndex": logist_idx,
+                    "endColumnIndex": logist_idx + 1,
+                },
+                "rule": {
+                    "condition": {
+                        "type": "ONE_OF_LIST",
+                        "values": one_of_list_values,
                     },
-                }
+                    "strict": True,
+                    "showCustomUi": True,
+                },
             }
-        )
-        requests.append(
-            {
-                "setDataValidation": {
-                    "range": _build_grid_range(sheet_id, row_number, execution_idx),
-                    "rule": {
-                        "condition": {
-                            "type": "BOOLEAN",
-                        },
-                        "strict": True,
-                        "showCustomUi": True,
+        },
+        {
+            "setDataValidation": {
+                "range": {
+                    "sheetId": sheet_id,
+                    "startRowIndex": 1,
+                    "endRowIndex": last_row,
+                    "startColumnIndex": execution_idx,
+                    "endColumnIndex": execution_idx + 1,
+                },
+                "rule": {
+                    "condition": {
+                        "type": "BOOLEAN",
                     },
-                }
+                    "strict": True,
+                    "showCustomUi": True,
+                },
             }
-        )
-
-    if requests:
-        worksheet.spreadsheet.batch_update({"requests": requests})
+        },
+    ]
+    worksheet.spreadsheet.batch_update({"requests": requests})
 
 
 def _normalize_date_text(value: Any) -> str:
