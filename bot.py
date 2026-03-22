@@ -60,7 +60,7 @@ logging.getLogger().addFilter(_RedactBotTokenFilter())
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
 
-START, DEPARTMENT, QUESTION, CUSTOM_INPUT, CROP_TYPE, CONFIRM, EDIT, DATE_TYPE, DATE_CALENDAR, DATE_PERIOD_END, LOAD_TEMPLATE, TEMPLATE_SELECT, SAVE_TEMPLATE_NAME, SAVE_TEMPLATE_CONFIRM, DELETE_TEMPLATE_CONFIRM, CITY_SEARCH_LOAD, CITY_SELECT_LOAD, CITY_SEARCH_UNLOAD, CITY_SELECT_UNLOAD, UNLOAD_DISTRIBUTION = range(20)
+START, DEPARTMENT, QUESTION, CUSTOM_INPUT, CROP_TYPE, CONFIRM, EDIT, DATE_TYPE, DATE_CALENDAR, DATE_PERIOD_END, LOAD_TEMPLATE, TEMPLATE_SELECT, SAVE_TEMPLATE_NAME, SAVE_TEMPLATE_CONFIRM, DELETE_TEMPLATE_CONFIRM, CITY_SEARCH_LOAD, CITY_SELECT_LOAD, CITY_SEARCH_UNLOAD, CITY_SELECT_UNLOAD, UNLOAD_DISTRIBUTION, CHILD_EDIT_MENU, CHILD_EDIT_CITY, CHILD_EDIT_VOLUME = range(23)
 
 THREAD_IDS = {
     "Тваринництво": 2,
@@ -196,6 +196,39 @@ QUESTIONS: List[Dict[str, Any]] = [
         "options": ["Пропустити"],
     },
 ]
+
+
+def _chat_type(update: Update) -> Optional[str]:
+    chat = getattr(update, "effective_chat", None)
+    if chat and getattr(chat, "type", None):
+        return chat.type
+    message = getattr(update, "message", None)
+    if message and getattr(message, "chat", None):
+        return message.chat.type
+    return None
+
+
+def _is_private_chat(update: Update) -> bool:
+    return _chat_type(update) == "private"
+
+
+async def _send_private_only_notice(update: Update) -> None:
+    message = getattr(update, "message", None)
+    if not message:
+        return
+
+    await message.reply_text(
+        "🚫 Створення заявки доступне лише в приватному чаті з ботом.",
+        reply_markup=ReplyKeyboardRemove(),
+    )
+
+    bot_username = (os.getenv("BOT_USERNAME") or "").strip().lstrip("@")
+    if bot_username:
+        deep_link = f"https://t.me/{bot_username}?start=apply"
+        keyboard = InlineKeyboardMarkup(
+            [[InlineKeyboardButton(text="📝 Відкрити бота в приваті", url=deep_link)]]
+        )
+        await message.reply_text("Натисніть кнопку нижче, щоб створити заявку в приваті:", reply_markup=keyboard)
 
 
 def _get_volume_prompt(size_type: str) -> str:
@@ -362,6 +395,57 @@ def _resolve_parent_request_id(request_id: str) -> str:
     return head if tail.isdigit() else rid
 
 
+def _parse_child_request_id(request_id: str) -> Tuple[str, Optional[int]]:
+    rid = (request_id or "").strip().upper()
+    if "-" not in rid:
+        return rid, None
+    head, tail = rid.rsplit("-", 1)
+    if not tail.isdigit():
+        return rid, None
+    return head, int(tail)
+
+
+def _build_child_items_from_data(data: Dict[str, Any]) -> List[Dict[str, Any]]:
+    unload_cities = _split_location_values(data.get("unload_city"))
+    distribution = data.get("unload_distribution") if isinstance(data.get("unload_distribution"), dict) else {}
+    ids_map = data.get("unload_distribution_ids") if isinstance(data.get("unload_distribution_ids"), dict) else {}
+    parent_id = (data.get("request_id") or "").strip().upper()
+    items: List[Dict[str, Any]] = []
+    for idx, city in enumerate(unload_cities, start=1):
+        amount = _to_float(distribution.get(city))
+        if amount is None:
+            amount = 0.0
+        child_id = str(ids_map.get(city) or "").strip().upper()
+        if not child_id:
+            child_id = f"{parent_id}-{idx:02d}" if parent_id else f"-{idx:02d}"
+        items.append({
+            "index": idx,
+            "city": city,
+            "amount": amount,
+            "child_id": child_id,
+        })
+    return items
+
+
+def _rebuild_distribution_from_items(items: List[Dict[str, Any]]) -> Tuple[str, Dict[str, float], Dict[str, str], float]:
+    unload_cities: List[str] = []
+    distribution: Dict[str, float] = {}
+    ids_map: Dict[str, str] = {}
+    total = 0.0
+    for item in items:
+        city = str(item.get("city", "")).strip()
+        if not city:
+            continue
+        amount = float(item.get("amount", 0.0) or 0.0)
+        child_id = str(item.get("child_id", "")).strip().upper()
+        unload_cities.append(city)
+        distribution[city] = amount
+        if child_id:
+            ids_map[city] = child_id
+        total += amount
+    return "; ".join(unload_cities) if unload_cities else "—", distribution, ids_map, total
+
+
 def _build_request_display_entries(requests: list) -> list:
     entries = []
     for req in requests:
@@ -370,25 +454,23 @@ def _build_request_display_entries(requests: list) -> list:
         if not isinstance(data, dict):
             data = {}
 
-        unload_cities = _split_location_values(data.get("unload_city"))
-        distribution = data.get("unload_distribution") if isinstance(data.get("unload_distribution"), dict) else {}
-
-        if rid and len(unload_cities) > 1 and distribution:
+        child_items = _build_child_items_from_data(data)
+        if rid and len(child_items) > 1:
             added_split_entries = False
-            for idx, city in enumerate(unload_cities, start=1):
-                city_amount = distribution.get(city)
-                if city_amount is None:
+            for item in child_items:
+                city = item.get("city")
+                city_amount = item.get("amount")
+                child_id = item.get("child_id")
+                if not city:
                     continue
 
                 child_data = dict(data)
                 child_data["unload_city"] = city
-                numeric_amount = _to_float(city_amount)
-                if numeric_amount is not None:
-                    child_data["volume"] = _format_number(numeric_amount)
+                child_data["volume"] = _format_number(float(city_amount or 0.0))
 
                 child_entry = dict(req)
                 child_entry["parent_request_id"] = rid
-                child_entry["display_request_id"] = f"{rid}-{idx:02d}"
+                child_entry["display_request_id"] = child_id or rid
                 child_entry["request_data"] = child_data
                 child_entry["is_split_part"] = True
                 entries.append(child_entry)
@@ -563,6 +645,10 @@ def _format_application(data: Dict[str, Any]) -> str:
 
 async def show_start_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Показати початкове меню: нова заявка або завантажити шаблон"""
+    if not _is_private_chat(update):
+        await _send_private_only_notice(update)
+        return ConversationHandler.END
+
     user_id = update.effective_user.id
     templates = db.get_user_templates(user_id)
     
@@ -700,6 +786,10 @@ async def handle_delete_template_confirm(update: Update, context: ContextTypes.D
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Команда /start - початок роботи бота"""
+    if not _is_private_chat(update):
+        await _send_private_only_notice(update)
+        return ConversationHandler.END
+
     # Перевірка, чи вже йде заповнення
     if context.user_data.get("question_index") is not None:
         keyboard = ReplyKeyboardMarkup(
@@ -719,6 +809,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
 async def handle_start_menu_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Обробка вибору на початковому меню (перед початком або для продовження)"""
+    if not _is_private_chat(update):
+        await _send_private_only_notice(update)
+        context.user_data.clear()
+        return ConversationHandler.END
+
     text = (update.message.text or "").strip()
     
     # Обробка меню після надіслання заявки
@@ -2904,6 +2999,13 @@ async def handle_save_template_name(update: Update, context: ContextTypes.DEFAUL
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data.clear()
+
+    if not _is_private_chat(update):
+        await update.message.reply_text(
+            "Заповнення скасовано.",
+            reply_markup=ReplyKeyboardRemove(),
+        )
+        return ConversationHandler.END
     
     # Показати кнопку для нової заявки в приватному чаті
     keyboard = ReplyKeyboardMarkup(
@@ -3030,8 +3132,8 @@ async def _send_requests_page(
         )
         keyboard = InlineKeyboardMarkup([
             [
-                InlineKeyboardButton(text="✏️ Редагувати", callback_data=f"REQACT:EDIT:{parent_rid}"),
-                InlineKeyboardButton(text="🗑️ Видалити", callback_data=f"REQACT:DEL:{parent_rid}"),
+                InlineKeyboardButton(text="✏️ Редагувати", callback_data=f"REQACT:EDIT:{rid}"),
+                InlineKeyboardButton(text="🗑️ Видалити", callback_data=f"REQACT:DEL:{rid}"),
             ],
             [
                 InlineKeyboardButton(text="📋 Копія заявки", callback_data=f"REQACT:COPY:{parent_rid}"),
@@ -3085,6 +3187,160 @@ async def my_requests_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     return ConversationHandler.END
 
 
+def _build_child_edit_menu_keyboard() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        [
+            [KeyboardButton(text="📍 Змінити НП розвантаження")],
+            [KeyboardButton(text="⚖️ Змінити обсяг точки")],
+            [KeyboardButton(text="✅ Зберегти зміни")],
+            [KeyboardButton(text="❌ Скасувати")],
+        ],
+        resize_keyboard=True,
+        one_time_keyboard=True,
+    )
+
+
+async def _persist_child_edit_and_sync(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    parent_request_id = context.user_data.get("child_edit_parent_id")
+    child_items = context.user_data.get("child_edit_items") or []
+    if not parent_request_id or not child_items:
+        await update.message.reply_text("❌ Дані редагування втрачені")
+        return START
+
+    request = db.get_request(parent_request_id)
+    if not request:
+        await update.message.reply_text("❌ Батьківську заявку не знайдено")
+        return START
+
+    request_data = request.get("request_data") or {}
+    if not isinstance(request_data, dict):
+        await update.message.reply_text("❌ Пошкоджені дані заявки")
+        return START
+
+    request_data["request_id"] = parent_request_id
+    unload_city, distribution, ids_map, total = _rebuild_distribution_from_items(child_items)
+    request_data["unload_city"] = unload_city
+    request_data["unload_distribution"] = distribution
+    request_data["unload_distribution_ids"] = ids_map
+    request_data["volume"] = _format_number(total)
+    if len(_split_location_values(unload_city)) > 1:
+        request_data["unload_place"] = "—"
+
+    db.update_request_data(parent_request_id, request_data)
+
+    chat_id = os.getenv("TARGET_CHAT_ID")
+    user = update.effective_user
+    user_mention = f"@{user.username}" if user and user.username else (user.full_name if user else "Користувач")
+    notification = f"📋 {user_mention} створив нову заявку:\n🆔 ID заявки: {parent_request_id}\n\n{_format_application(request_data)}"
+
+    try:
+        if request.get("message_id") and chat_id:
+            await context.bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=request.get("message_id"),
+                text=notification,
+            )
+    except Exception as e:
+        logging.error(f"Failed to update parent message after child edit: {e}")
+
+    try:
+        sheets.export_to_sheets(request_data)
+    except Exception as e:
+        logging.error(f"Failed to export child edit to sheets: {e}")
+
+    for key in [
+        "child_edit_parent_id",
+        "child_edit_child_id",
+        "child_edit_items",
+    ]:
+        context.user_data.pop(key, None)
+
+    await update.message.reply_text("✅ Зміни підзаявки збережено", reply_markup=ReplyKeyboardRemove())
+    return await show_start_menu(update, context)
+
+
+async def handle_child_edit_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    text = (update.message.text or "").strip()
+    child_id = context.user_data.get("child_edit_child_id")
+    child_items = context.user_data.get("child_edit_items") or []
+    target = next((item for item in child_items if item.get("child_id") == child_id), None)
+
+    if text == "❌ Скасувати":
+        for key in ["child_edit_parent_id", "child_edit_child_id", "child_edit_items"]:
+            context.user_data.pop(key, None)
+        await update.message.reply_text("❎ Редагування підзаявки скасовано", reply_markup=ReplyKeyboardRemove())
+        return await show_start_menu(update, context)
+
+    if not target:
+        await update.message.reply_text("❌ Не знайдено підзаявку для редагування")
+        return START
+
+    if text == "📍 Змінити НП розвантаження":
+        await update.message.reply_text(
+            f"Поточний НП: {target.get('city')}\nВведіть новий НП розвантаження:",
+            reply_markup=ReplyKeyboardRemove(),
+        )
+        return CHILD_EDIT_CITY
+
+    if text == "⚖️ Змінити обсяг точки":
+        size_type = context.user_data.get("size_type", "")
+        await update.message.reply_text(
+            f"Поточний обсяг: {_format_volume_for_size(size_type, float(target.get('amount', 0.0)))}\n"
+            f"Введіть новий обсяг (тільки число):",
+            reply_markup=ReplyKeyboardRemove(),
+        )
+        return CHILD_EDIT_VOLUME
+
+    if text == "✅ Зберегти зміни":
+        return await _persist_child_edit_and_sync(update, context)
+
+    await update.message.reply_text("Оберіть дію з меню.", reply_markup=_build_child_edit_menu_keyboard())
+    return CHILD_EDIT_MENU
+
+
+async def handle_child_edit_city(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    new_city = (update.message.text or "").strip()
+    if not new_city:
+        await update.message.reply_text("❌ Введіть назву НП")
+        return CHILD_EDIT_CITY
+
+    child_id = context.user_data.get("child_edit_child_id")
+    items = context.user_data.get("child_edit_items") or []
+    target = next((item for item in items if item.get("child_id") == child_id), None)
+    if not target:
+        await update.message.reply_text("❌ Не знайдено підзаявку")
+        return START
+
+    duplicate = next((item for item in items if item.get("child_id") != child_id and item.get("city") == new_city), None)
+    if duplicate:
+        await update.message.reply_text("❌ Такий НП вже є в списку розвантаження. Вкажіть інший.")
+        return CHILD_EDIT_CITY
+
+    target["city"] = new_city
+    context.user_data["child_edit_items"] = items
+    await update.message.reply_text("✅ НП оновлено", reply_markup=_build_child_edit_menu_keyboard())
+    return CHILD_EDIT_MENU
+
+
+async def handle_child_edit_volume(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    value = _to_float((update.message.text or "").strip())
+    if value is None or value <= 0:
+        await update.message.reply_text("❌ Введіть коректне число більше 0")
+        return CHILD_EDIT_VOLUME
+
+    child_id = context.user_data.get("child_edit_child_id")
+    items = context.user_data.get("child_edit_items") or []
+    target = next((item for item in items if item.get("child_id") == child_id), None)
+    if not target:
+        await update.message.reply_text("❌ Не знайдено підзаявку")
+        return START
+
+    target["amount"] = float(value)
+    context.user_data["child_edit_items"] = items
+    await update.message.reply_text("✅ Обсяг точки оновлено", reply_markup=_build_child_edit_menu_keyboard())
+    return CHILD_EDIT_MENU
+
+
 async def handle_request_action_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Обробка кнопок дій під заявкою (редагувати/видалити)."""
     query = update.callback_query
@@ -3125,13 +3381,14 @@ async def handle_request_action_callback(update: Update, context: ContextTypes.D
         return ConversationHandler.END
 
     request_id = arg.strip().upper()
-    parent_request_id = _resolve_parent_request_id(request_id)
+    parsed_child = _parse_child_request_id(request_id)
+    parent_request_id = parsed_child[0] if parsed_child else _resolve_parent_request_id(request_id)
+    is_child_action = parsed_child is not None
 
     user = update.effective_user
     request = db.get_request(request_id)
     if not request and parent_request_id != request_id:
         request = db.get_request(parent_request_id)
-        request_id = parent_request_id
     if not request:
         await query.answer("Заявку не знайдено", show_alert=True)
         return START
@@ -3150,21 +3407,116 @@ async def handle_request_action_callback(update: Update, context: ContextTypes.D
             await query.answer("Дані заявки пошкоджені", show_alert=True)
             return START
 
+        if is_child_action:
+            child_items = _build_child_items_from_data(parent_request_id, request_data)
+            target = next((item for item in child_items if item.get("child_id") == request_id), None)
+            if not target:
+                await query.answer("Підзаявку не знайдено", show_alert=True)
+                return START
+
+            context.user_data["child_edit_parent_id"] = parent_request_id
+            context.user_data["child_edit_child_id"] = request_id
+            context.user_data["child_edit_items"] = child_items
+
+            await query.message.reply_text(
+                f"✏️ Редагування підзаявки {request_id}\n"
+                f"НП: {target.get('city')}\n"
+                f"Обсяг: {_format_number(float(target.get('amount', 0.0)))}",
+                reply_markup=_build_child_edit_menu_keyboard(),
+            )
+            return CHILD_EDIT_MENU
+
         context.user_data.clear()
         context.user_data.update(request_data)
-        context.user_data["request_id"] = request_id
-        context.user_data["last_request_id"] = request_id
+        context.user_data["request_id"] = parent_request_id
+        context.user_data["last_request_id"] = parent_request_id
         context.user_data["editing_mode"] = True
         context.user_data["is_request_edit"] = True
         # Зберегти оригінальні дані для порівняння після редагування
         context.user_data["original_request_data"] = dict(request_data)
 
-        await query.message.reply_text(f"✏️ Відкрив заявку {request_id} для редагування")
+        await query.message.reply_text(f"✏️ Відкрив заявку {parent_request_id} для редагування")
         fake_update = type('obj', (object,), {'message': query.message, 'effective_user': update.effective_user})()
         return await show_edit_fields(fake_update, context)
 
     if action == "DEL":
-        db.mark_request_as_deleted(request_id)
+        if is_child_action:
+            request_data = request.get("request_data") or {}
+            if not isinstance(request_data, dict):
+                await query.answer("Дані заявки пошкоджені", show_alert=True)
+                return START
+
+            child_items = _build_child_items_from_data(parent_request_id, request_data)
+            before_count = len(child_items)
+            child_items = [item for item in child_items if item.get("child_id") != request_id]
+            if len(child_items) == before_count:
+                await query.answer("Підзаявку не знайдено", show_alert=True)
+                return START
+
+            if not child_items:
+                db.mark_request_as_deleted(parent_request_id)
+
+                if request.get("message_id"):
+                    chat_id = os.getenv("TARGET_CHAT_ID")
+                    try:
+                        await context.bot.delete_message(
+                            chat_id=chat_id,
+                            message_id=request["message_id"]
+                        )
+                    except Exception as e:
+                        logging.error(f"Failed to delete group message for {parent_request_id}: {e}")
+
+                try:
+                    sheets.mark_request_deleted_exact(request_id)
+                except Exception as e:
+                    logging.error(f"Failed to mark child request as deleted in sheets: {e}")
+
+                try:
+                    await query.edit_message_reply_markup(reply_markup=None)
+                except Exception:
+                    pass
+
+                await query.message.reply_text(f"✅ Підзаявку {request_id} видалено")
+                fake_update = type('obj', (object,), {'message': query.message, 'effective_user': update.effective_user})()
+                return await show_start_menu(fake_update, context)
+
+            unload_city, distribution, ids_map, total = _rebuild_distribution_from_items(child_items)
+            request_data["request_id"] = parent_request_id
+            request_data["unload_city"] = unload_city
+            request_data["unload_distribution"] = distribution
+            request_data["unload_distribution_ids"] = ids_map
+            request_data["volume"] = _format_number(total)
+            if len(_split_location_values(unload_city)) > 1:
+                request_data["unload_place"] = "—"
+            db.update_request_data(parent_request_id, request_data)
+
+            chat_id = os.getenv("TARGET_CHAT_ID")
+            user_mention = f"@{user.username}" if user and user.username else (user.full_name if user else "Користувач")
+            notification = f"📋 {user_mention} створив нову заявку:\n🆔 ID заявки: {parent_request_id}\n\n{_format_application(request_data)}"
+            try:
+                if request.get("message_id") and chat_id:
+                    await context.bot.edit_message_text(
+                        chat_id=chat_id,
+                        message_id=request.get("message_id"),
+                        text=notification,
+                    )
+            except Exception as e:
+                logging.error(f"Failed to update parent message after child delete: {e}")
+
+            try:
+                sheets.mark_request_deleted_exact(request_id)
+            except Exception as e:
+                logging.error(f"Failed to mark child request as deleted in sheets: {e}")
+            try:
+                sheets.export_to_sheets(request_data)
+            except Exception as e:
+                logging.error(f"Failed to sync parent request after child delete: {e}")
+
+            await query.message.reply_text(f"✅ Підзаявку {request_id} видалено")
+            fake_update = type('obj', (object,), {'message': query.message, 'effective_user': update.effective_user})()
+            return await show_start_menu(fake_update, context)
+
+        db.mark_request_as_deleted(parent_request_id)
 
         if request.get("message_id"):
             chat_id = os.getenv("TARGET_CHAT_ID")
@@ -3174,10 +3526,10 @@ async def handle_request_action_callback(update: Update, context: ContextTypes.D
                     message_id=request["message_id"]
                 )
             except Exception as e:
-                logging.error(f"Failed to delete group message for {request_id}: {e}")
+                logging.error(f"Failed to delete group message for {parent_request_id}: {e}")
 
         try:
-            sheets.mark_request_deleted(request_id)
+            sheets.mark_request_deleted(parent_request_id)
         except Exception as e:
             logging.error(f"Failed to mark request as deleted in sheets: {e}")
 
@@ -3186,7 +3538,7 @@ async def handle_request_action_callback(update: Update, context: ContextTypes.D
         except Exception:
             pass
 
-        await query.message.reply_text(f"✅ Заявку {request_id} видалено")
+        await query.message.reply_text(f"✅ Заявку {parent_request_id} видалено")
         
         # Показати меню для подальших дій
         context.user_data.clear()
@@ -3283,11 +3635,12 @@ async def edit_request_command(update: Update, context: ContextTypes.DEFAULT_TYP
         return START
 
     request_id = context.args[0].strip().upper()
-    parent_request_id = _resolve_parent_request_id(request_id)
+    parsed_child = _parse_child_request_id(request_id)
+    parent_request_id = parsed_child[0] if parsed_child else _resolve_parent_request_id(request_id)
+    is_child_action = parsed_child is not None
     request = db.get_request(request_id)
     if not request and parent_request_id != request_id:
         request = db.get_request(parent_request_id)
-        request_id = parent_request_id
     if not request:
         await update.message.reply_text(f"❌ Заявку з ID {request_id} не знайдено")
         return START
@@ -3305,10 +3658,28 @@ async def edit_request_command(update: Update, context: ContextTypes.DEFAULT_TYP
         await update.message.reply_text("❌ Не вдалося прочитати дані заявки для редагування")
         return START
 
+    if is_child_action:
+        child_items = _build_child_items_from_data(parent_request_id, request_data)
+        target = next((item for item in child_items if item.get("child_id") == request_id), None)
+        if not target:
+            await update.message.reply_text(f"❌ Підзаявку з ID {request_id} не знайдено")
+            return START
+
+        context.user_data["child_edit_parent_id"] = parent_request_id
+        context.user_data["child_edit_child_id"] = request_id
+        context.user_data["child_edit_items"] = child_items
+        await update.message.reply_text(
+            f"✏️ Відкрив підзаявку {request_id} для редагування\n"
+            f"НП: {target.get('city')}\n"
+            f"Обсяг: {_format_number(float(target.get('amount', 0.0)))}",
+            reply_markup=_build_child_edit_menu_keyboard(),
+        )
+        return CHILD_EDIT_MENU
+
     context.user_data.clear()
     context.user_data.update(request_data)
-    context.user_data["request_id"] = request_id
-    context.user_data["last_request_id"] = request_id
+    context.user_data["request_id"] = parent_request_id
+    context.user_data["last_request_id"] = parent_request_id
     context.user_data["editing_mode"] = True
     context.user_data["is_request_edit"] = True
     # Зберегти оригінальні дані для порівняння після редагування
@@ -3405,6 +3776,18 @@ def build_app() -> Application:
             ],
             UNLOAD_DISTRIBUTION: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_unload_distribution),
+                CommandHandler("cancel", cancel),
+            ],
+            CHILD_EDIT_MENU: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_child_edit_menu),
+                CommandHandler("cancel", cancel),
+            ],
+            CHILD_EDIT_CITY: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_child_edit_city),
+                CommandHandler("cancel", cancel),
+            ],
+            CHILD_EDIT_VOLUME: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_child_edit_volume),
                 CommandHandler("cancel", cancel),
             ],
             CONFIRM: [

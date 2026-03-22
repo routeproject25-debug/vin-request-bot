@@ -116,12 +116,35 @@ def _format_number(value: float) -> str:
     return f"{value:.3f}".rstrip("0").rstrip(".")
 
 
+def _format_number_with_comma(value: float) -> str:
+    """Format number with comma as decimal separator."""
+    return _format_number(value).replace(".", ",")
+
+
 def _format_volume_with_unit(size_type: str, volume_value: Any) -> str:
     numeric = _to_float(volume_value)
     if numeric is None:
         return "—"
-    unit = "шт" if size_type == "Біг-бег" else "т"
-    return f"{_format_number(numeric)} {unit}"
+    # Для Google Sheets зберігаємо тільки число без одиниць,
+    # щоб можна було сумувати та будувати зведені таблиці.
+    return _format_number_with_comma(numeric)
+
+
+def _normalize_date_text(value: Any) -> str:
+    """Normalize date text and drop accidental leading apostrophe for dd.mm.yyyy values."""
+    if value is None:
+        return "—"
+
+    text = str(value).strip()
+    if not text:
+        return "—"
+
+    # Sheets/API clients may pass text date like `'22.03.2026`; keep only the date part.
+    match = re.match(r"^'+\s*(\d{2}\.\d{2}\.\d{4})$", text)
+    if match:
+        return match.group(1)
+
+    return text
 
 
 def get_sheets_client():
@@ -246,13 +269,13 @@ def export_to_sheets(data: Dict[str, Any]) -> Tuple[bool, str]:
                 # Розділити на дату початку і кінця
                 parts = date_period.split(" - ")
                 if len(parts) == 2:
-                    date_start = parts[0].strip()
-                    date_end = parts[1].strip()
+                    date_start = _normalize_date_text(parts[0])
+                    date_end = _normalize_date_text(parts[1])
                 else:
-                    date_start = date_period
+                    date_start = _normalize_date_text(date_period)
             else:
                 # Одна дата - це дата початку
-                date_start = date_period
+                date_start = _normalize_date_text(date_period)
         
         # Підготувати рядок(и) даних по заголовках таблиці
         headers = worksheet.row_values(1)
@@ -300,6 +323,8 @@ def export_to_sheets(data: Dict[str, Any]) -> Tuple[bool, str]:
         unload_cities = _split_multi_values(data.get("unload_city"))
         raw_distribution = data.get("unload_distribution")
         distribution = raw_distribution if isinstance(raw_distribution, dict) else {}
+        raw_ids_map = data.get("unload_distribution_ids")
+        ids_map = raw_ids_map if isinstance(raw_ids_map, dict) else {}
 
         rows_payload: List[Dict[str, Any]] = []
         if len(unload_cities) > 1 and distribution:
@@ -310,7 +335,8 @@ def export_to_sheets(data: Dict[str, Any]) -> Tuple[bool, str]:
 
                 city_values = dict(base_values_by_header)
                 if request_id:
-                    city_values["ID заявки"] = f"{request_id}-{idx:02d}"
+                    stable_child_id = str(ids_map.get(city) or "").strip().upper()
+                    city_values["ID заявки"] = stable_child_id if stable_child_id else f"{request_id}-{idx:02d}"
                 city_values["Населений пункт розвантаження"] = city
                 city_values["Склад розвантаження"] = "—"
                 city_values["Обсяг"] = _format_volume_with_unit(data.get("size_type", ""), city_volume)
@@ -338,24 +364,29 @@ def export_to_sheets(data: Dict[str, Any]) -> Tuple[bool, str]:
 
         logger.info(f"✓ Prepared {len(rows)} row(s) for export")
 
-        # Якщо заявка з таким ID вже існує - видаляємо всі її рядки і вставляємо оновлені.
+        # Ідемпотентний upsert: оновити рядки з тим самим ID заявки, нові — вставити.
         id_idx = header_map.get("ID заявки")
-        existing_rows: List[int] = []
+        if id_idx is None:
+            return False, "У таблиці немає колонки 'ID заявки'"
 
-        if request_id and id_idx is not None:
-            id_column_values = worksheet.col_values(id_idx + 1)
-            for row_number in range(2, len(id_column_values) + 1):
-                row_id = (id_column_values[row_number - 1] or "").strip().upper()
-                if row_id == request_id or row_id.startswith(f"{request_id}-"):
-                    existing_rows.append(row_number)
+        id_column_values = worksheet.col_values(id_idx + 1)
+        existing_by_id: Dict[str, int] = {}
+        for row_number in range(2, len(id_column_values) + 1):
+            row_id = (id_column_values[row_number - 1] or "").strip().upper()
+            if row_id:
+                existing_by_id[row_id] = row_number
 
-        if existing_rows:
-            logger.info(f"Deleting {len(existing_rows)} existing row(s) for request_id={request_id}")
-            for row_number in sorted(existing_rows, reverse=True):
-                worksheet.delete_rows(row_number)
+        for row in rows:
+            row_id = ""
+            if id_idx < len(row):
+                row_id = (str(row[id_idx]) or "").strip().upper()
 
-        for row in reversed(rows):
-            worksheet.insert_row(row, index=2, value_input_option='RAW')
+            if row_id and row_id in existing_by_id:
+                row_number = existing_by_id[row_id]
+                for col_idx, value in enumerate(row, start=1):
+                    worksheet.update_cell(row_number, col_idx, _safe_sheet_value(value))
+            else:
+                worksheet.insert_row(row, index=2, value_input_option='RAW')
         
         logger.info(f"✅ Successfully exported request to Google Sheets (spreadsheet: {spreadsheet_id})")
         return True, ""
@@ -438,6 +469,68 @@ def mark_request_deleted(request_id: str, deleted_by: str = "") -> Tuple[bool, s
 
     except Exception as e:
         logger.error(f"Error marking request deleted: {e}")
+        return False, f"Помилка при позначенні заявки: {e}"
+
+
+def mark_request_deleted_exact(request_id: str, deleted_by: str = "") -> Tuple[bool, str]:
+    """Позначити як ВИДАЛЕНО тільки один конкретний рядок за точним ID заявки."""
+    try:
+        if not request_id:
+            return False, "Порожній ID заявки"
+
+        client = get_sheets_client()
+        if not client:
+            return False, "Не вдалося створити клієнт Google Sheets"
+
+        spreadsheet_id = os.getenv("GOOGLE_SPREADSHEET_ID")
+        worksheet_name = os.getenv("GOOGLE_WORKSHEET_NAME", "ЗАЯВКА")
+
+        if not spreadsheet_id:
+            return False, "GOOGLE_SPREADSHEET_ID не задано"
+
+        spreadsheet = client.open_by_key(spreadsheet_id)
+        worksheet = spreadsheet.worksheet(worksheet_name)
+
+        headers = worksheet.row_values(1)
+        if not headers:
+            return False, "У таблиці порожній рядок заголовків"
+
+        header_map = {h.strip(): idx for idx, h in enumerate(headers) if h and h.strip()}
+        id_idx = header_map.get("ID заявки")
+        status_idx = header_map.get("Статус")
+
+        if id_idx is None:
+            return False, "У таблиці немає колонки 'ID заявки'"
+        if status_idx is None:
+            return False, "У таблиці немає колонки 'Статус'"
+
+        normalized_request_id = request_id.strip().upper()
+        id_column_values = worksheet.col_values(id_idx + 1)
+
+        matched_row = None
+        for row_number in range(2, len(id_column_values) + 1):
+            row_id = (id_column_values[row_number - 1] or "").strip().upper()
+            if row_id == normalized_request_id:
+                matched_row = row_number
+                break
+
+        if not matched_row:
+            return False, f"Заявку з ID '{request_id}' не знайдено"
+
+        current_status = (worksheet.cell(matched_row, status_idx + 1).value or "").strip().upper()
+        if current_status != "ВИДАЛЕНО":
+            worksheet.update_cell(matched_row, status_idx + 1, "ВИДАЛЕНО")
+
+        comment_idx = header_map.get("Коментар видалення")
+        if comment_idx is not None:
+            kyiv_tz = pytz.timezone('Europe/Kyiv')
+            timestamp = datetime.now(kyiv_tz).strftime("%d.%m.%Y %H:%M")
+            by_text = deleted_by.strip() if deleted_by else "Невідомий користувач"
+            worksheet.update_cell(matched_row, comment_idx + 1, f"{timestamp} | {by_text}")
+
+        return True, f"Заявка {request_id} позначена як ВИДАЛЕНО"
+    except Exception as e:
+        logger.error(f"Error marking request deleted exactly: {e}")
         return False, f"Помилка при позначенні заявки: {e}"
 
 
