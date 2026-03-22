@@ -218,7 +218,6 @@ def _apply_logist_and_execution_validations(
                     "rule": {
                         "condition": {
                             "type": "BOOLEAN",
-                            "values": [],
                         },
                         "strict": True,
                         "showCustomUi": True,
@@ -477,6 +476,9 @@ def export_to_sheets(data: Dict[str, Any]) -> Tuple[bool, str]:
             if row_id:
                 existing_by_id[row_id] = row_number
 
+        logist_idx = header_map.get("Логіст")
+        execution_idx = header_map.get("Виконання")
+
         target_row_ids: List[str] = []
         for row in rows:
             row_id = ""
@@ -488,6 +490,10 @@ def export_to_sheets(data: Dict[str, Any]) -> Tuple[bool, str]:
             if row_id and row_id in existing_by_id:
                 row_number = existing_by_id[row_id]
                 safe_row = [_safe_sheet_value(value) for value in row]
+                if logist_idx is not None and logist_idx < len(safe_row):
+                    safe_row[logist_idx] = ""
+                if execution_idx is not None and execution_idx < len(safe_row):
+                    safe_row[execution_idx] = ""
                 end_col_letter = _column_to_letter(len(safe_row))
                 worksheet.update(
                     f"A{row_number}:{end_col_letter}{row_number}",
@@ -496,6 +502,10 @@ def export_to_sheets(data: Dict[str, Any]) -> Tuple[bool, str]:
                 )
             else:
                 safe_row = [_safe_sheet_value(value) for value in row]
+                if logist_idx is not None and logist_idx < len(safe_row):
+                    safe_row[logist_idx] = ""
+                if execution_idx is not None and execution_idx < len(safe_row):
+                    safe_row[execution_idx] = ""
                 worksheet.insert_row(safe_row, index=2, value_input_option='USER_ENTERED')
 
         try:
