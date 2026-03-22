@@ -88,6 +88,11 @@ def _safe_sheet_value(value: Any) -> Any:
     if not cleaned:
         return "—"
 
+    # Прибираємо випадковий апостроф-префікс, щоб значення не ставали текстом у таблиці.
+    cleaned = re.sub(r"^'+\s*", "", cleaned)
+    if not cleaned:
+        return "—"
+
     # Якщо текст починається з '+', Sheets у USER_ENTERED може трактувати це як формулу.
     if cleaned.startswith("+"):
         return "'" + cleaned
@@ -383,10 +388,16 @@ def export_to_sheets(data: Dict[str, Any]) -> Tuple[bool, str]:
 
             if row_id and row_id in existing_by_id:
                 row_number = existing_by_id[row_id]
-                for col_idx, value in enumerate(row, start=1):
-                    worksheet.update_cell(row_number, col_idx, _safe_sheet_value(value))
+                safe_row = [_safe_sheet_value(value) for value in row]
+                end_col_letter = _column_to_letter(len(safe_row))
+                worksheet.update(
+                    f"A{row_number}:{end_col_letter}{row_number}",
+                    [safe_row],
+                    value_input_option="USER_ENTERED",
+                )
             else:
-                worksheet.insert_row(row, index=2, value_input_option='RAW')
+                safe_row = [_safe_sheet_value(value) for value in row]
+                worksheet.insert_row(safe_row, index=2, value_input_option='USER_ENTERED')
         
         logger.info(f"✅ Successfully exported request to Google Sheets (spreadsheet: {spreadsheet_id})")
         return True, ""
