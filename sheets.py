@@ -9,6 +9,12 @@ import pytz
 
 logger = logging.getLogger(__name__)
 
+DEFAULT_LOGISTS = [
+    "Нетудихата К.",
+    "Покотило Д.",
+    "Тимошенко Ю.",
+]
+
 # Scope для Google Sheets API
 SCOPES = [
     'https://www.googleapis.com/auth/spreadsheets',
@@ -133,6 +139,96 @@ def _format_volume_with_unit(size_type: str, volume_value: Any) -> str:
     # Для Google Sheets зберігаємо тільки число без одиниць,
     # щоб можна було сумувати та будувати зведені таблиці.
     return _format_number_with_comma(numeric)
+
+
+def _get_logists_list() -> List[str]:
+    """Return logist names sorted alphabetically from env or defaults."""
+    env_value = (os.getenv("LOGISTS_LIST") or "").strip()
+    if env_value:
+        raw_items = re.split(r"[,;\n]", env_value)
+        items = [item.strip() for item in raw_items if item.strip()]
+        if items:
+            return sorted(items, key=str.casefold)
+    return sorted(DEFAULT_LOGISTS, key=str.casefold)
+
+
+def _build_grid_range(sheet_id: int, row_number: int, col_index_zero_based: int) -> Dict[str, int]:
+    """Build Google Sheets GridRange for a single cell."""
+    return {
+        "sheetId": sheet_id,
+        "startRowIndex": row_number - 1,
+        "endRowIndex": row_number,
+        "startColumnIndex": col_index_zero_based,
+        "endColumnIndex": col_index_zero_based + 1,
+    }
+
+
+def _apply_logist_and_execution_validations(
+    worksheet,
+    header_map: Dict[str, int],
+    target_row_ids: List[str],
+) -> None:
+    """Apply logist dropdown and execution checkbox for target rows."""
+    logist_idx = header_map.get("Логіст")
+    execution_idx = header_map.get("Виконання")
+    id_idx = header_map.get("ID заявки")
+    if logist_idx is None or execution_idx is None or id_idx is None:
+        return
+
+    unique_ids = [rid for rid in dict.fromkeys(target_row_ids) if rid]
+    if not unique_ids:
+        return
+
+    id_column_values = worksheet.col_values(id_idx + 1)
+    row_by_id: Dict[str, int] = {}
+    for row_number in range(2, len(id_column_values) + 1):
+        row_id = (id_column_values[row_number - 1] or "").strip().upper()
+        if row_id:
+            row_by_id[row_id] = row_number
+
+    sheet_id = worksheet.id
+    logists = _get_logists_list()
+    one_of_list_values = [{"userEnteredValue": name} for name in logists]
+
+    requests = []
+    for rid in unique_ids:
+        row_number = row_by_id.get(rid)
+        if not row_number:
+            continue
+
+        requests.append(
+            {
+                "setDataValidation": {
+                    "range": _build_grid_range(sheet_id, row_number, logist_idx),
+                    "rule": {
+                        "condition": {
+                            "type": "ONE_OF_LIST",
+                            "values": one_of_list_values,
+                        },
+                        "strict": True,
+                        "showCustomUi": True,
+                    },
+                }
+            }
+        )
+        requests.append(
+            {
+                "setDataValidation": {
+                    "range": _build_grid_range(sheet_id, row_number, execution_idx),
+                    "rule": {
+                        "condition": {
+                            "type": "BOOLEAN",
+                            "values": [],
+                        },
+                        "strict": True,
+                        "showCustomUi": True,
+                    },
+                }
+            }
+        )
+
+    if requests:
+        worksheet.spreadsheet.batch_update({"requests": requests})
 
 
 def _normalize_date_text(value: Any) -> str:
@@ -381,10 +477,13 @@ def export_to_sheets(data: Dict[str, Any]) -> Tuple[bool, str]:
             if row_id:
                 existing_by_id[row_id] = row_number
 
+        target_row_ids: List[str] = []
         for row in rows:
             row_id = ""
             if id_idx < len(row):
                 row_id = (str(row[id_idx]) or "").strip().upper()
+                if row_id:
+                    target_row_ids.append(row_id)
 
             if row_id and row_id in existing_by_id:
                 row_number = existing_by_id[row_id]
@@ -398,6 +497,11 @@ def export_to_sheets(data: Dict[str, Any]) -> Tuple[bool, str]:
             else:
                 safe_row = [_safe_sheet_value(value) for value in row]
                 worksheet.insert_row(safe_row, index=2, value_input_option='USER_ENTERED')
+
+        try:
+            _apply_logist_and_execution_validations(worksheet, header_map, target_row_ids)
+        except Exception as e:
+            logger.warning(f"Failed to apply logist/execution validations: {e}")
         
         logger.info(f"✅ Successfully exported request to Google Sheets (spreadsheet: {spreadsheet_id})")
         return True, ""
