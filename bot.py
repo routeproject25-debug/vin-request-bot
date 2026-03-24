@@ -60,7 +60,7 @@ logging.getLogger().addFilter(_RedactBotTokenFilter())
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
 
-START, DEPARTMENT, QUESTION, CUSTOM_INPUT, CROP_TYPE, CONFIRM, EDIT, DATE_TYPE, DATE_CALENDAR, DATE_PERIOD_END, LOAD_TEMPLATE, TEMPLATE_SELECT, SAVE_TEMPLATE_NAME, SAVE_TEMPLATE_CONFIRM, DELETE_TEMPLATE_CONFIRM, CITY_SEARCH_LOAD, CITY_SELECT_LOAD, CITY_SEARCH_UNLOAD, CITY_SELECT_UNLOAD, UNLOAD_DISTRIBUTION, CHILD_EDIT_MENU, CHILD_EDIT_CITY, CHILD_EDIT_VOLUME = range(23)
+START, DEPARTMENT, QUESTION, CUSTOM_INPUT, CROP_TYPE, CONFIRM, EDIT, DATE_TYPE, DATE_CALENDAR, DATE_PERIOD_END, LOAD_TEMPLATE, TEMPLATE_SELECT, SAVE_TEMPLATE_NAME, SAVE_TEMPLATE_CONFIRM, DELETE_TEMPLATE_CONFIRM, CITY_SEARCH_LOAD, CITY_SELECT_LOAD, CITY_SEARCH_UNLOAD, CITY_SELECT_UNLOAD, UNLOAD_DISTRIBUTION, CHILD_EDIT_MENU, CHILD_EDIT_CITY, CHILD_EDIT_VOLUME, FIND_REQUEST_EDIT = range(24)
 
 THREAD_IDS = {
     "Тваринництво": 2,
@@ -698,6 +698,8 @@ async def show_start_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         [KeyboardButton(text="📝 Нова заявка")],
         [KeyboardButton(text="⚡ Швидка заявка")],
         [KeyboardButton(text="📋 Мої заявки")],
+        [KeyboardButton(text="🔎 Пошук/редагування заявки")],
+        [KeyboardButton(text="🆔 Мій ID")],
     ]
     
     if templates:
@@ -942,6 +944,26 @@ async def handle_start_menu_choice(update: Update, context: ContextTypes.DEFAULT
 
     elif text == "📋 Мої заявки":
         return await my_requests_command(update, context)
+
+    elif text == "🆔 Мій ID":
+        user = update.effective_user
+        if not user:
+            await update.message.reply_text("❌ Не вдалося визначити ваш ID")
+            return START
+
+        username = f"@{user.username}" if user.username else "—"
+        await update.message.reply_text(
+            f"Ваш Telegram ID: {user.id}\nUsername: {username}"
+        )
+        return START
+
+    elif text == "🔎 Пошук/редагування заявки":
+        await update.message.reply_text(
+            "Введіть ID заявки для редагування\n"
+            "Приклад: A1B2C3D4 або A1B2C3D4-01",
+            reply_markup=ReplyKeyboardRemove(),
+        )
+        return FIND_REQUEST_EDIT
     
     # Якщо користувач вже заповнюватиме - обробити продовження/рестарт
     if text == "Продовжити":
@@ -3672,11 +3694,21 @@ async def edit_request_command(update: Update, context: ContextTypes.DEFAULT_TYP
         )
         return START
 
+    request_id = context.args[0].strip().upper()
+    return await _open_request_for_edit_by_id(update, context, request_id)
+
+
+async def _open_request_for_edit_by_id(update: Update, context: ContextTypes.DEFAULT_TYPE, request_id: str) -> int:
+    """Open request by ID in edit mode (supports parent and child IDs)."""
+    if not request_id:
+        await update.message.reply_text("❌ Вкажіть ID заявки")
+        return START
+
     user = update.effective_user
     if not user:
         return START
 
-    request_id = context.args[0].strip().upper()
+    request_id = request_id.strip().upper()
     parsed_child = _parse_child_request_id(request_id)
     parent_request_id = parsed_child[0] if parsed_child else _resolve_parent_request_id(request_id)
     is_child_action = parsed_child is not None
@@ -3729,6 +3761,19 @@ async def edit_request_command(update: Update, context: ContextTypes.DEFAULT_TYP
 
     await update.message.reply_text(f"✏️ Відкрив заявку {request_id} для редагування")
     return await show_edit_fields(update, context)
+
+
+async def handle_find_request_edit_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Handle request ID entered from start-menu search button."""
+    text = (update.message.text or "").strip()
+    if not text:
+        await update.message.reply_text("❌ Введіть ID заявки")
+        return FIND_REQUEST_EDIT
+
+    if text == "⬅️ Назад":
+        return await show_start_menu(update, context)
+
+    return await _open_request_for_edit_by_id(update, context, text)
 
 
 async def handle_make_request_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -3830,6 +3875,10 @@ def build_app() -> Application:
             ],
             CHILD_EDIT_VOLUME: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_child_edit_volume),
+                CommandHandler("cancel", cancel),
+            ],
+            FIND_REQUEST_EDIT: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_find_request_edit_input),
                 CommandHandler("cancel", cancel),
             ],
             CONFIRM: [
