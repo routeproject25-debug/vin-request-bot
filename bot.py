@@ -5,6 +5,7 @@ import calendar
 import uuid
 import io
 import csv
+import unicodedata
 import aiohttp
 import pytz
 from typing import Dict, Any, List, Optional, Tuple
@@ -811,6 +812,26 @@ def _load_png_summary_fonts(ImageFont):
     return fallback, fallback, None, tried
 
 
+def _to_ascii_translit(text: str) -> str:
+    """Transliterate Cyrillic text to ASCII for environments without Unicode fonts."""
+    if not text:
+        return ""
+
+    mapping = {
+        "А": "A", "Б": "B", "В": "V", "Г": "H", "Ґ": "G", "Д": "D", "Е": "E", "Є": "Ye", "Ж": "Zh", "З": "Z",
+        "И": "Y", "І": "I", "Ї": "Yi", "Й": "Y", "К": "K", "Л": "L", "М": "M", "Н": "N", "О": "O", "П": "P",
+        "Р": "R", "С": "S", "Т": "T", "У": "U", "Ф": "F", "Х": "Kh", "Ц": "Ts", "Ч": "Ch", "Ш": "Sh", "Щ": "Shch",
+        "Ь": "", "Ю": "Yu", "Я": "Ya",
+        "а": "a", "б": "b", "в": "v", "г": "h", "ґ": "g", "д": "d", "е": "e", "є": "ye", "ж": "zh", "з": "z",
+        "и": "y", "і": "i", "ї": "yi", "й": "y", "к": "k", "л": "l", "м": "m", "н": "n", "о": "o", "п": "p",
+        "р": "r", "с": "s", "т": "t", "у": "u", "ф": "f", "х": "kh", "ц": "ts", "ч": "ch", "ш": "sh", "щ": "shch",
+        "ь": "", "ю": "yu", "я": "ya",
+        "Ё": "Yo", "ё": "yo", "Ы": "Y", "ы": "y", "Э": "E", "э": "e", "Ъ": "", "ъ": "",
+    }
+    mapped = "".join(mapping.get(ch, ch) for ch in text)
+    return unicodedata.normalize("NFKD", mapped).encode("ascii", "ignore").decode("ascii")
+
+
 async def _send_summary_png(update: Update, context: ContextTypes.DEFAULT_TYPE, date_str: str, entries: List[Dict[str, Any]]) -> None:
     """Generate PNG image with compact summary and send it to chat."""
     try:
@@ -832,18 +853,20 @@ async def _send_summary_png(update: Update, context: ContextTypes.DEFAULT_TYPE, 
 
     font, title_font, font_path, tried_paths = _load_png_summary_fonts(ImageFont)
 
-    # Do not send unreadable PNG with missing Cyrillic glyphs.
+    translit_mode = False
+    # Continue with ASCII transliteration if Unicode font is unavailable.
     if not font_path:
+        translit_mode = True
         configured = (os.getenv("SUMMARY_FONT_PATH") or "").strip() or "(не задано)"
         tried_preview = "\n".join([f"- {p}" for p in tried_paths[:6]]) if tried_paths else "- (порожньо)"
         await update.effective_message.reply_text(
-            "❌ PNG не згенеровано: не знайдено Unicode-шрифт для кирилиці.\n"
+            "⚠️ Unicode-шрифт не знайдено, генерую PNG у трансліті (ASCII).\n"
             f"SUMMARY_FONT_PATH: {configured}\n"
             "Спробовані варіанти:\n"
             f"{tried_preview}\n\n"
-            "Рекомендація: встановіть шлях до існуючого .ttf у контейнері."
+            "Рекомендація: встановіть шлях до існуючого .ttf у контейнері для нормальної кирилиці."
         )
-        return
+        lines = [_to_ascii_translit(line) for line in lines]
 
     dummy_img = Image.new("RGB", (1, 1), "white")
     draw = ImageDraw.Draw(dummy_img)
@@ -876,7 +899,10 @@ async def _send_summary_png(update: Update, context: ContextTypes.DEFAULT_TYPE, 
     await context.bot.send_document(
         chat_id=update.effective_chat.id,
         document=InputFile(png_bytes),
-        caption=f"🖼️ PNG зведення за {date_str}",
+        caption=(
+            f"🖼️ PNG зведення за {date_str}" if not translit_mode
+            else f"🖼️ PNG зведення за {date_str} (ASCII-трансліт)"
+        ),
     )
 
 
