@@ -738,7 +738,11 @@ def _load_png_summary_fonts(ImageFont):
     configured_path = (os.getenv("SUMMARY_FONT_PATH") or "").strip()
     candidates = []
     if configured_path:
-        candidates.append(configured_path)
+        normalized = configured_path.strip().strip('"').strip("'")
+        candidates.append(normalized)
+        # Railway/UI can occasionally pass path without leading '/'.
+        if not normalized.startswith("/") and not re.match(r"^[A-Za-z]:[/\\]", normalized):
+            candidates.append("/" + normalized.lstrip("/"))
 
     candidates.extend([
         # Linux (Railway/Ubuntu)
