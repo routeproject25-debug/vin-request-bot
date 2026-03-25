@@ -637,7 +637,7 @@ def _parse_calendar_callback(data: str, prefix: str = CAL_PREFIX) -> Tuple[str, 
     return "IGNORE", None
 
 
-SUMMARY_PAGE_SIZE = 4
+SUMMARY_BUTTONS_PAGE_SIZE = 3
 
 
 def _short_city_name(value: Any) -> str:
@@ -908,7 +908,6 @@ async def _render_admin_daily_summary(update: Update, context: ContextTypes.DEFA
             f"Заявок не знайдено"
         )
     else:
-        page = entries[offset:offset + SUMMARY_PAGE_SIZE]
         lines = [
             f"📊 Зведення за {date_str}",
             f"Всього: {total} | Активні: {active_count} | Сумарний обсяг: {_format_number(total_volume)}",
@@ -916,19 +915,19 @@ async def _render_admin_daily_summary(update: Update, context: ContextTypes.DEFA
             "",
             "N | ID | Ініціатор | Вантаж | Маршрут | Обсяг | Статус",
         ]
-        for idx, req in enumerate(page, start=offset + 1):
+        for idx, req in enumerate(entries, start=1):
             lines.append(_format_summary_entry_compact_line(req, idx))
         summary_text = "\n".join(lines)
 
     buttons: List[List[InlineKeyboardButton]] = []
 
-    page_items = entries[offset:offset + SUMMARY_PAGE_SIZE]
+    page_items = entries[offset:offset + SUMMARY_BUTTONS_PAGE_SIZE]
     for req in page_items:
         rid = (req.get("request_id") or "").strip().upper()
         if rid:
             buttons.append([
-                InlineKeyboardButton(text=rid, callback_data=f"SUMEDIT:{rid}"),
-                InlineKeyboardButton(text="🗑️", callback_data=f"SUMDELASK:{rid}"),
+                InlineKeyboardButton(text=f"✏️{rid}", callback_data=f"SUMEDIT:{rid}"),
+                InlineKeyboardButton(text="🗑", callback_data=f"SUMDELASK:{rid}"),
             ])
 
     dept = filters.get("department", "ALL")
@@ -945,8 +944,8 @@ async def _render_admin_daily_summary(update: Update, context: ContextTypes.DEFA
     ])
 
     nav_row: List[InlineKeyboardButton] = []
-    prev_offset = max(0, offset - SUMMARY_PAGE_SIZE)
-    next_offset = offset + SUMMARY_PAGE_SIZE
+    prev_offset = max(0, offset - SUMMARY_BUTTONS_PAGE_SIZE)
+    next_offset = offset + SUMMARY_BUTTONS_PAGE_SIZE
     if offset > 0:
         nav_row.append(InlineKeyboardButton(text="⬅️ Назад", callback_data=f"SUMPAGE:{prev_offset}"))
     if next_offset < total:
