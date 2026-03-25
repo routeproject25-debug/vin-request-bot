@@ -960,7 +960,20 @@ async def _render_admin_daily_summary(update: Update, context: ContextTypes.DEFA
     ])
     buttons.append([InlineKeyboardButton(text="📅 Інша дата", callback_data="SUMDATE")])
 
-    await update.effective_message.reply_text(summary_text, reply_markup=InlineKeyboardMarkup(buttons))
+    markup = InlineKeyboardMarkup(buttons)
+
+    query = getattr(update, "callback_query", None)
+    if query and query.message:
+        try:
+            await query.edit_message_text(summary_text, reply_markup=markup)
+        except Exception as e:
+            # If message can't be edited (e.g., too old), send a fresh one as fallback.
+            if "Message is not modified" in str(e):
+                return START
+            logging.warning(f"Failed to edit summary message, sending a new one: {e}")
+            await query.message.reply_text(summary_text, reply_markup=markup)
+    else:
+        await update.effective_message.reply_text(summary_text, reply_markup=markup)
     return START
 
 
@@ -2222,7 +2235,7 @@ async def handle_summary_action_callback(update: Update, context: ContextTypes.D
     if action == "SUMDATE":
         today = date.today()
         calendar_markup = _build_month_calendar(today.year, today.month, prefix=SUMMARY_CAL_PREFIX)
-        await query.message.reply_text("Оберіть дату для зведення:", reply_markup=calendar_markup)
+        await query.edit_message_text("Оберіть дату для зведення:", reply_markup=calendar_markup)
         return SUMMARY_DATE_CALENDAR
 
     if action == "SUMEXP":
