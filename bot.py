@@ -986,20 +986,25 @@ async def show_start_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     user_id = update.effective_user.id
     templates = db.get_user_templates(user_id)
     
-    buttons = [
-        [KeyboardButton(text="📝 Нова заявка")],
-        [KeyboardButton(text="⚡ Швидка заявка")],
-        [KeyboardButton(text="📋 Мої заявки")],
-        [KeyboardButton(text="🔎 Пошук/редагування заявки")],
-        [KeyboardButton(text="🆔 Мій ID")],
+    menu_items = [
+        "📝 Нова заявка",
+        "⚡ Швидка заявка",
+        "📋 Мої заявки",
+        "🔎 Пошук/редагування заявки",
+        "🆔 Мій ID",
     ]
 
     if _is_admin_user(update.effective_user):
-        buttons.append([KeyboardButton(text="📊 Зведення за датою")])
+        menu_items.append("📊 Зведення за датою")
     
     if templates:
-        buttons.append([KeyboardButton(text="📋 Завантажити шаблон")])
-        buttons.append([KeyboardButton(text="🗑️ Видалити шаблон")])
+        menu_items.append("📋 Завантажити шаблон")
+        menu_items.append("🗑️ Видалити шаблон")
+
+    buttons: List[List[KeyboardButton]] = []
+    for idx in range(0, len(menu_items), 2):
+        row_items = menu_items[idx:idx + 2]
+        buttons.append([KeyboardButton(text=item) for item in row_items])
     
     keyboard = ReplyKeyboardMarkup(buttons, resize_keyboard=True, one_time_keyboard=True)
     await update.message.reply_text(
