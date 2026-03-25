@@ -737,6 +737,15 @@ def _load_png_summary_fonts(ImageFont):
     """Load Unicode fonts for PNG summary, preferring configured/system paths."""
     configured_path = (os.getenv("SUMMARY_FONT_PATH") or "").strip()
     candidates = []
+
+    # Try Pillow bundled fonts first (works even when OS fonts are absent in container).
+    try:
+        pil_module_dir = os.path.dirname(getattr(ImageFont, "__file__", "") or "")
+        if pil_module_dir:
+            candidates.append(os.path.join(pil_module_dir, "fonts", "DejaVuSans.ttf"))
+    except Exception:
+        pass
+
     if configured_path:
         normalized = configured_path.strip().strip('"').strip("'")
         candidates.append(normalized)
