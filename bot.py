@@ -637,7 +637,7 @@ def _parse_calendar_callback(data: str, prefix: str = CAL_PREFIX) -> Tuple[str, 
     return "IGNORE", None
 
 
-SUMMARY_PAGE_SIZE = 8
+SUMMARY_PAGE_SIZE = 4
 
 
 def _short_city_name(value: Any) -> str:
@@ -676,16 +676,38 @@ def _format_summary_entry_line(req: Dict[str, Any]) -> str:
     if not isinstance(data, dict):
         data = {}
     initiator = str(data.get("initiator") or "—")
+    cargo = str(data.get("cargo_type") or "—")
     route = _build_compact_route(data)
     volume_value = _to_float(data.get("volume"))
     volume = _format_volume_for_size(str(data.get("size_type") or ""), volume_value) if volume_value is not None else "—"
-    return f"{rid} | {initiator} | {route} | {volume} | {status}"
+    return f"{rid} | {initiator} | {cargo} | {route} | {volume} | {status}"
+
+
+def _format_summary_entry_block(req: Dict[str, Any], index: int) -> str:
+    rid = (req.get("request_id") or "—").strip().upper()
+    status = req.get("status") or "АКТИВНА"
+    data = req.get("request_data") or {}
+    if not isinstance(data, dict):
+        data = {}
+    initiator = str(data.get("initiator") or "—")
+    cargo = str(data.get("cargo_type") or "—")
+    route = _build_compact_route(data)
+    volume_value = _to_float(data.get("volume"))
+    volume = _format_volume_for_size(str(data.get("size_type") or ""), volume_value) if volume_value is not None else "—"
+    return (
+        f"{index}. 🆔 {rid}\n"
+        f"   👤 Ініціатор: {initiator}\n"
+        f"   📦 Вантаж: {cargo}\n"
+        f"   📍 Маршрут: {route}\n"
+        f"   ⚖️ Обсяг: {volume}\n"
+        f"   📌 Статус: {status}"
+    )
 
 
 def _build_summary_export_text(date_str: str, entries: List[Dict[str, Any]]) -> str:
     lines = [
         f"Зведення за {date_str}",
-        "Формат: ID | Ініціатор | Маршрут | Обсяг | Статус",
+        "Формат: ID | Ініціатор | Вантаж | Маршрут | Обсяг | Статус",
         "",
     ]
     for req in entries:
@@ -696,7 +718,7 @@ def _build_summary_export_text(date_str: str, entries: List[Dict[str, Any]]) -> 
 async def _send_summary_csv(update: Update, context: ContextTypes.DEFAULT_TYPE, date_str: str, entries: List[Dict[str, Any]]) -> None:
     output = io.StringIO()
     writer = csv.writer(output, delimiter=';')
-    writer.writerow(["ID", "Ініціатор", "Маршрут", "Обсяг", "Статус"])
+    writer.writerow(["ID", "Ініціатор", "Вантаж", "Маршрут", "Обсяг", "Статус"])
     for req in entries:
         line = _format_summary_entry_line(req)
         parts = [part.strip() for part in line.split("|")]
@@ -721,11 +743,15 @@ def _load_png_summary_fonts(ImageFont):
     candidates.extend([
         # Linux (Railway/Ubuntu)
         "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/dejavu/DejaVuSans.ttf",
+        "/usr/local/share/fonts/DejaVuSans.ttf",
         "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
         "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
         # Windows typical paths
         "C:/Windows/Fonts/arial.ttf",
         "C:/Windows/Fonts/calibri.ttf",
+        "C:/Windows/Fonts/segoeui.ttf",
     ])
 
     for font_path in candidates:
@@ -734,13 +760,13 @@ def _load_png_summary_fonts(ImageFont):
         try:
             font = ImageFont.truetype(font_path, 16)
             title_font = ImageFont.truetype(font_path, 18)
-            return font, title_font
+                return font, title_font, font_path
         except Exception:
             continue
 
     logging.warning("PNG summary: Unicode font not found, using fallback default font")
     fallback = ImageFont.load_default()
-    return fallback, fallback
+            return fallback, fallback, None
 
 
 async def _send_summary_png(update: Update, context: ContextTypes.DEFAULT_TYPE, date_str: str, entries: List[Dict[str, Any]]) -> None:
@@ -753,7 +779,7 @@ async def _send_summary_png(update: Update, context: ContextTypes.DEFAULT_TYPE, 
 
     lines = [
         f"Зведення за {date_str}",
-        "ID | Ініціатор | Маршрут | Обсяг | Статус",
+        "ID | Ініціатор | Вантаж | Маршрут | Обсяг | Статус",
         "",
     ]
     for req in entries:
@@ -762,7 +788,16 @@ async def _send_summary_png(update: Update, context: ContextTypes.DEFAULT_TYPE, 
     if len(lines) > 120:
         lines = lines[:120] + ["... (скорочено, використайте CSV для повного списку)"]
 
-    font, title_font = _load_png_summary_fonts(ImageFont)
+    font, title_font, font_path = _load_png_summary_fonts(ImageFont)
+
+    # Do not send unreadable PNG with missing Cyrillic glyphs.
+    if not font_path:
+        await update.effective_message.reply_text(
+            "❌ PNG не згенеровано: не знайдено Unicode-шрифт для кирилиці.\n"
+            "Додайте змінну SUMMARY_FONT_PATH у Variables, наприклад:\n"
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
+        )
+        return
 
     dummy_img = Image.new("RGB", (1, 1), "white")
     draw = ImageDraw.Draw(dummy_img)
@@ -841,10 +876,11 @@ async def _render_admin_daily_summary(update: Update, context: ContextTypes.DEFA
             f"Всього: {total} | Активні: {active_count} | Сумарний обсяг: {_format_number(total_volume)}",
             f"Фільтр відділу: {department} | Тільки активні: {'Так' if active_only else 'Ні'}",
             "",
-            "Формат: ID | Ініціатор | Маршрут | Обсяг | Статус",
+            "Кожна заявка:",
         ]
-        for req in page:
-            lines.append(_format_summary_entry_line(req))
+        for idx, req in enumerate(page, start=offset + 1):
+            lines.append(_format_summary_entry_block(req, idx))
+            lines.append("────────────────")
         summary_text = "\n".join(lines)
 
     buttons: List[List[InlineKeyboardButton]] = []
