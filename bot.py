@@ -711,6 +711,38 @@ async def _send_summary_csv(update: Update, context: ContextTypes.DEFAULT_TYPE, 
     )
 
 
+def _load_png_summary_fonts(ImageFont):
+    """Load Unicode fonts for PNG summary, preferring configured/system paths."""
+    configured_path = (os.getenv("SUMMARY_FONT_PATH") or "").strip()
+    candidates = []
+    if configured_path:
+        candidates.append(configured_path)
+
+    candidates.extend([
+        # Linux (Railway/Ubuntu)
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+        # Windows typical paths
+        "C:/Windows/Fonts/arial.ttf",
+        "C:/Windows/Fonts/calibri.ttf",
+    ])
+
+    for font_path in candidates:
+        if not font_path:
+            continue
+        try:
+            font = ImageFont.truetype(font_path, 16)
+            title_font = ImageFont.truetype(font_path, 18)
+            return font, title_font
+        except Exception:
+            continue
+
+    logging.warning("PNG summary: Unicode font not found, using fallback default font")
+    fallback = ImageFont.load_default()
+    return fallback, fallback
+
+
 async def _send_summary_png(update: Update, context: ContextTypes.DEFAULT_TYPE, date_str: str, entries: List[Dict[str, Any]]) -> None:
     """Generate PNG image with compact summary and send it to chat."""
     try:
@@ -730,12 +762,7 @@ async def _send_summary_png(update: Update, context: ContextTypes.DEFAULT_TYPE, 
     if len(lines) > 120:
         lines = lines[:120] + ["... (скорочено, використайте CSV для повного списку)"]
 
-    try:
-        font = ImageFont.truetype("DejaVuSans.ttf", 16)
-        title_font = ImageFont.truetype("DejaVuSans.ttf", 18)
-    except Exception:
-        font = ImageFont.load_default()
-        title_font = font
+    font, title_font = _load_png_summary_fonts(ImageFont)
 
     dummy_img = Image.new("RGB", (1, 1), "white")
     draw = ImageDraw.Draw(dummy_img)
