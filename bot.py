@@ -762,6 +762,7 @@ def _load_png_summary_fonts(ImageFont):
     """Load Unicode fonts for PNG summary, preferring configured/system paths."""
     configured_path = (os.getenv("SUMMARY_FONT_PATH") or "").strip()
     candidates = []
+    tried: List[str] = []
 
     # Try Pillow bundled fonts first (works even when OS fonts are absent in container).
     try:
@@ -779,6 +780,8 @@ def _load_png_summary_fonts(ImageFont):
             candidates.append("/" + normalized.lstrip("/"))
 
     candidates.extend([
+        # Let PIL resolve by font name if available in runtime search path.
+        "DejaVuSans.ttf",
         # Linux (Railway/Ubuntu)
         "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
         "/usr/share/fonts/dejavu/DejaVuSans.ttf",
@@ -795,16 +798,17 @@ def _load_png_summary_fonts(ImageFont):
     for font_path in candidates:
         if not font_path:
             continue
+        tried.append(font_path)
         try:
             font = ImageFont.truetype(font_path, 16)
             title_font = ImageFont.truetype(font_path, 18)
-            return font, title_font, font_path
+            return font, title_font, font_path, tried
         except Exception:
             continue
 
     logging.warning("PNG summary: Unicode font not found, using fallback default font")
     fallback = ImageFont.load_default()
-    return fallback, fallback, None
+    return fallback, fallback, None, tried
 
 
 async def _send_summary_png(update: Update, context: ContextTypes.DEFAULT_TYPE, date_str: str, entries: List[Dict[str, Any]]) -> None:
@@ -826,14 +830,18 @@ async def _send_summary_png(update: Update, context: ContextTypes.DEFAULT_TYPE, 
     if len(lines) > 120:
         lines = lines[:120] + ["... (скорочено, використайте CSV для повного списку)"]
 
-    font, title_font, font_path = _load_png_summary_fonts(ImageFont)
+    font, title_font, font_path, tried_paths = _load_png_summary_fonts(ImageFont)
 
     # Do not send unreadable PNG with missing Cyrillic glyphs.
     if not font_path:
+        configured = (os.getenv("SUMMARY_FONT_PATH") or "").strip() or "(не задано)"
+        tried_preview = "\n".join([f"- {p}" for p in tried_paths[:6]]) if tried_paths else "- (порожньо)"
         await update.effective_message.reply_text(
             "❌ PNG не згенеровано: не знайдено Unicode-шрифт для кирилиці.\n"
-            "Додайте змінну SUMMARY_FONT_PATH у Variables, наприклад:\n"
-            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
+            f"SUMMARY_FONT_PATH: {configured}\n"
+            "Спробовані варіанти:\n"
+            f"{tried_preview}\n\n"
+            "Рекомендація: встановіть шлях до існуючого .ttf у контейнері."
         )
         return
 
