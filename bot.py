@@ -760,13 +760,13 @@ def _load_png_summary_fonts(ImageFont):
         try:
             font = ImageFont.truetype(font_path, 16)
             title_font = ImageFont.truetype(font_path, 18)
-                return font, title_font, font_path
+            return font, title_font, font_path
         except Exception:
             continue
 
     logging.warning("PNG summary: Unicode font not found, using fallback default font")
     fallback = ImageFont.load_default()
-            return fallback, fallback, None
+    return fallback, fallback, None
 
 
 async def _send_summary_png(update: Update, context: ContextTypes.DEFAULT_TYPE, date_str: str, entries: List[Dict[str, Any]]) -> None:
