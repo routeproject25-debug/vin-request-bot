@@ -704,6 +704,31 @@ def _format_summary_entry_block(req: Dict[str, Any], index: int) -> str:
     )
 
 
+def _truncate_text(value: Any, max_len: int) -> str:
+    text = str(value or "—").strip()
+    if len(text) <= max_len:
+        return text
+    return text[: max_len - 1].rstrip() + "…"
+
+
+def _format_summary_entry_compact_line(req: Dict[str, Any], index: int) -> str:
+    rid = (req.get("request_id") or "—").strip().upper()
+    status = (req.get("status") or "АКТИВНА").strip().upper()
+    status_short = "🟢" if status != "ВИДАЛЕНО" else "🔴"
+
+    data = req.get("request_data") or {}
+    if not isinstance(data, dict):
+        data = {}
+
+    initiator = _truncate_text(data.get("initiator") or "—", 16)
+    cargo = _truncate_text(data.get("cargo_type") or "—", 14)
+    route = _truncate_text(_build_compact_route(data), 22)
+    volume_value = _to_float(data.get("volume"))
+    volume = _format_volume_for_size(str(data.get("size_type") or ""), volume_value) if volume_value is not None else "—"
+
+    return f"{index}. {rid} | {initiator} | {cargo} | {route} | {volume} | {status_short}"
+
+
 def _build_summary_export_text(date_str: str, entries: List[Dict[str, Any]]) -> str:
     lines = [
         f"Зведення за {date_str}",
@@ -889,11 +914,10 @@ async def _render_admin_daily_summary(update: Update, context: ContextTypes.DEFA
             f"Всього: {total} | Активні: {active_count} | Сумарний обсяг: {_format_number(total_volume)}",
             f"Фільтр відділу: {department} | Тільки активні: {'Так' if active_only else 'Ні'}",
             "",
-            "Кожна заявка:",
+            "N | ID | Ініціатор | Вантаж | Маршрут | Обсяг | Статус",
         ]
         for idx, req in enumerate(page, start=offset + 1):
-            lines.append(_format_summary_entry_block(req, idx))
-            lines.append("────────────────")
+            lines.append(_format_summary_entry_compact_line(req, idx))
         summary_text = "\n".join(lines)
 
     buttons: List[List[InlineKeyboardButton]] = []
@@ -902,7 +926,10 @@ async def _render_admin_daily_summary(update: Update, context: ContextTypes.DEFA
     for req in page_items:
         rid = (req.get("request_id") or "").strip().upper()
         if rid:
-            buttons.append([InlineKeyboardButton(text=f"✏️ {rid}", callback_data=f"SUMEDIT:{rid}")])
+            buttons.append([
+                InlineKeyboardButton(text=rid, callback_data=f"SUMEDIT:{rid}"),
+                InlineKeyboardButton(text="🗑️", callback_data=f"SUMDELASK:{rid}"),
+            ])
 
     dept = filters.get("department", "ALL")
     buttons.append([
@@ -2230,6 +2257,63 @@ async def handle_summary_action_callback(update: Update, context: ContextTypes.D
             return START
         fake_update = type('obj', (object,), {'message': query.message, 'effective_user': update.effective_user})()
         return await _open_request_for_edit_by_id(fake_update, context, request_id)
+
+    if action == "SUMDELASK":
+        request_id = arg.strip().upper()
+        if not request_id:
+            await query.answer("Порожній ID", show_alert=True)
+            return START
+        confirm_keyboard = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton(text="✅ Видалити", callback_data=f"SUMDELYES:{request_id}"),
+                InlineKeyboardButton(text="❌ Скасувати", callback_data=f"SUMDELNO:{request_id}"),
+            ]
+        ])
+        await query.message.reply_text(
+            f"Підтвердьте видалення заявки {request_id}",
+            reply_markup=confirm_keyboard,
+        )
+        return START
+
+    if action == "SUMDELNO":
+        await query.answer("Видалення скасовано")
+        return START
+
+    if action == "SUMDELYES":
+        request_id = arg.strip().upper()
+        if not request_id:
+            await query.answer("Порожній ID", show_alert=True)
+            return START
+
+        request = db.get_request(request_id)
+        if not request:
+            await query.answer("Заявку не знайдено", show_alert=True)
+            return START
+
+        if (request.get("status") or "").strip().upper() == "ВИДАЛЕНО":
+            await query.answer("Заявка вже видалена", show_alert=True)
+            return START
+
+        db.mark_request_as_deleted(request_id)
+
+        if request.get("message_id"):
+            chat_id = os.getenv("TARGET_CHAT_ID")
+            try:
+                await context.bot.delete_message(
+                    chat_id=chat_id,
+                    message_id=request["message_id"],
+                )
+            except Exception as e:
+                logging.error(f"Failed to delete group message for {request_id}: {e}")
+
+        try:
+            sheets.mark_request_deleted(request_id)
+        except Exception as e:
+            logging.error(f"Failed to mark request as deleted in sheets from summary: {e}")
+
+        await query.message.reply_text(f"✅ Заявку {request_id} видалено")
+        offset = int(context.user_data.get("summary_offset") or 0)
+        return await _render_admin_daily_summary(update, context, offset=offset)
 
     await query.answer("Невідома дія", show_alert=True)
     return START
@@ -4235,7 +4319,7 @@ def build_app() -> Application:
             CommandHandler("edit_request", edit_request_command),
             CallbackQueryHandler(handle_request_action_callback, pattern=r"^REQACT:"),
             CallbackQueryHandler(handle_summary_calendar, pattern=r"^SUMCAL:"),
-            CallbackQueryHandler(handle_summary_action_callback, pattern=r"^SUM(EDIT|PAGE|DEPT|TOGGLEACTIVE|EXP|DATE)"),
+            CallbackQueryHandler(handle_summary_action_callback, pattern=r"^SUM(EDIT|DELASK|DELYES|DELNO|PAGE|DEPT|TOGGLEACTIVE|EXP|DATE)"),
             MessageHandler(filters.Regex("^📝 Зробити заявку$"), start),
         ],
         states={
@@ -4243,7 +4327,7 @@ def build_app() -> Application:
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_start_menu_choice),
                 CallbackQueryHandler(handle_request_action_callback, pattern=r"^REQACT:"),
                 CallbackQueryHandler(handle_summary_calendar, pattern=r"^SUMCAL:"),
-                CallbackQueryHandler(handle_summary_action_callback, pattern=r"^SUM(EDIT|PAGE|DEPT|TOGGLEACTIVE|EXP|DATE)"),
+                CallbackQueryHandler(handle_summary_action_callback, pattern=r"^SUM(EDIT|DELASK|DELYES|DELNO|PAGE|DEPT|TOGGLEACTIVE|EXP|DATE)"),
             ],
             LOAD_TEMPLATE: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_start_menu_choice),
