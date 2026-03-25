@@ -2,7 +2,7 @@ import os
 import json
 import logging
 from typing import Optional, List, Dict, Any
-from datetime import datetime
+from datetime import datetime, timedelta
 import psycopg2
 from psycopg2.extras import RealDictCursor, Json
 
@@ -447,4 +447,45 @@ def get_user_requests(user_id: int, limit: int = 50) -> List[Dict[str, Any]]:
         return [dict(r) for r in requests]
     except Exception as e:
         logger.error(f"Error fetching user requests: {e}")
+        return []
+
+
+def get_requests_by_date(
+    date_str: str,
+    department: Optional[str] = None,
+    active_only: bool = False,
+    limit: int = 500,
+) -> List[Dict[str, Any]]:
+    """Отримати заявки за конкретну дату з додатковими фільтрами."""
+    try:
+        day_start = datetime.strptime(date_str, "%d.%m.%Y")
+        day_end = day_start + timedelta(days=1)
+
+        conn = get_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+
+        dept_filter = (department or "").strip()
+        if dept_filter.upper() == "ALL":
+            dept_filter = ""
+
+        cursor.execute(
+            """
+            SELECT *
+            FROM requests
+            WHERE created_at >= %s
+              AND created_at < %s
+              AND (%s = '' OR COALESCE(request_data->>'department', '') = %s)
+              AND (%s = FALSE OR COALESCE(status, 'АКТИВНА') != 'ВИДАЛЕНО')
+            ORDER BY created_at DESC
+            LIMIT %s
+            """,
+            (day_start, day_end, dept_filter, dept_filter, active_only, limit),
+        )
+
+        rows = cursor.fetchall()
+        cursor.close()
+        conn.close()
+        return [dict(row) for row in rows]
+    except Exception as e:
+        logger.error(f"Error fetching requests by date: {e}")
         return []

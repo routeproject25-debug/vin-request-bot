@@ -6,3 +6,4 @@ aiohttp==3.9.3
 pytz==2024.1
 gspread==6.0.0
 google-auth==2.27.0
+Pillow==10.4.0

@@ -3,6 +3,8 @@ import re
 import logging
 import calendar
 import uuid
+import io
+import csv
 import aiohttp
 import pytz
 from typing import Dict, Any, List, Optional, Tuple
@@ -14,6 +16,7 @@ from db import save_contacts, get_user_contacts
 
 from telegram import (
     Update,
+    InputFile,
     ReplyKeyboardMarkup,
     ReplyKeyboardRemove,
     KeyboardButton,
@@ -60,7 +63,7 @@ logging.getLogger().addFilter(_RedactBotTokenFilter())
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
 
-START, DEPARTMENT, QUESTION, CUSTOM_INPUT, CROP_TYPE, CONFIRM, EDIT, DATE_TYPE, DATE_CALENDAR, DATE_PERIOD_END, LOAD_TEMPLATE, TEMPLATE_SELECT, SAVE_TEMPLATE_NAME, SAVE_TEMPLATE_CONFIRM, DELETE_TEMPLATE_CONFIRM, CITY_SEARCH_LOAD, CITY_SELECT_LOAD, CITY_SEARCH_UNLOAD, CITY_SELECT_UNLOAD, UNLOAD_DISTRIBUTION, CHILD_EDIT_MENU, CHILD_EDIT_CITY, CHILD_EDIT_VOLUME, FIND_REQUEST_EDIT = range(24)
+START, DEPARTMENT, QUESTION, CUSTOM_INPUT, CROP_TYPE, CONFIRM, EDIT, DATE_TYPE, DATE_CALENDAR, DATE_PERIOD_END, LOAD_TEMPLATE, TEMPLATE_SELECT, SAVE_TEMPLATE_NAME, SAVE_TEMPLATE_CONFIRM, DELETE_TEMPLATE_CONFIRM, CITY_SEARCH_LOAD, CITY_SELECT_LOAD, CITY_SEARCH_UNLOAD, CITY_SELECT_UNLOAD, UNLOAD_DISTRIBUTION, CHILD_EDIT_MENU, CHILD_EDIT_CITY, CHILD_EDIT_VOLUME, FIND_REQUEST_EDIT, SUMMARY_DATE_CALENDAR = range(25)
 
 THREAD_IDS = {
     "Тваринництво": 2,
@@ -72,6 +75,7 @@ CROP_TYPES = ["Кукурудза", "Пшениця", "Соя", "Ріпак", "�
 LIQUID_BULK_CARGO = {"КАС", "РКД", "АМ вода"}
 
 CAL_PREFIX = "CAL"
+SUMMARY_CAL_PREFIX = "SUMCAL"
 MONTH_NAMES_UK = [
     "Січень",
     "Лютий",
@@ -578,23 +582,23 @@ def _build_reply_keyboard(options: Optional[List[str]], show_back: bool = False)
     return ReplyKeyboardMarkup(buttons, resize_keyboard=True, one_time_keyboard=True)
 
 
-def _build_month_calendar(year: int, month: int) -> InlineKeyboardMarkup:
+def _build_month_calendar(year: int, month: int, prefix: str = CAL_PREFIX) -> InlineKeyboardMarkup:
     rows: List[List[InlineKeyboardButton]] = []
     header_text = f"{MONTH_NAMES_UK[month - 1]} {year}"
-    rows.append([InlineKeyboardButton(text=header_text, callback_data=f"{CAL_PREFIX}:X")])
-    rows.append([InlineKeyboardButton(text=day, callback_data=f"{CAL_PREFIX}:X") for day in WEEKDAYS_UK])
+    rows.append([InlineKeyboardButton(text=header_text, callback_data=f"{prefix}:X")])
+    rows.append([InlineKeyboardButton(text=day, callback_data=f"{prefix}:X") for day in WEEKDAYS_UK])
 
     cal = calendar.Calendar(firstweekday=0)
     for week in cal.monthdayscalendar(year, month):
         row: List[InlineKeyboardButton] = []
         for day in week:
             if day == 0:
-                row.append(InlineKeyboardButton(text=" ", callback_data=f"{CAL_PREFIX}:X"))
+                row.append(InlineKeyboardButton(text=" ", callback_data=f"{prefix}:X"))
             else:
                 row.append(
                     InlineKeyboardButton(
                         text=str(day),
-                        callback_data=f"{CAL_PREFIX}:D:{year:04d}-{month:02d}-{day:02d}",
+                        callback_data=f"{prefix}:D:{year:04d}-{month:02d}-{day:02d}",
                     )
                 )
         rows.append(row)
@@ -603,16 +607,16 @@ def _build_month_calendar(year: int, month: int) -> InlineKeyboardMarkup:
     next_year, next_month = (year + 1, 1) if month == 12 else (year, month + 1)
     rows.append(
         [
-            InlineKeyboardButton(text="«", callback_data=f"{CAL_PREFIX}:N:{prev_year:04d}-{prev_month:02d}"),
-            InlineKeyboardButton(text="Сьогодні", callback_data=f"{CAL_PREFIX}:T"),
-            InlineKeyboardButton(text="»", callback_data=f"{CAL_PREFIX}:N:{next_year:04d}-{next_month:02d}"),
+            InlineKeyboardButton(text="«", callback_data=f"{prefix}:N:{prev_year:04d}-{prev_month:02d}"),
+            InlineKeyboardButton(text="Сьогодні", callback_data=f"{prefix}:T"),
+            InlineKeyboardButton(text="»", callback_data=f"{prefix}:N:{next_year:04d}-{next_month:02d}"),
         ]
     )
     return InlineKeyboardMarkup(rows)
 
 
-def _parse_calendar_callback(data: str) -> Tuple[str, Optional[str]]:
-    if not data or not data.startswith(f"{CAL_PREFIX}:"):
+def _parse_calendar_callback(data: str, prefix: str = CAL_PREFIX) -> Tuple[str, Optional[str]]:
+    if not data or not data.startswith(f"{prefix}:"):
         return "IGNORE", None
     parts = data.split(":", 2)
     if len(parts) < 2:
@@ -631,6 +635,231 @@ def _parse_calendar_callback(data: str) -> Tuple[str, Optional[str]]:
     if action == "D":
         return "DATE", payload
     return "IGNORE", None
+
+
+SUMMARY_PAGE_SIZE = 8
+
+
+def _short_city_name(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text or text == "—":
+        return "—"
+    first = text.split(";")[0].strip()
+    first = first.split(",")[0].strip()
+    first = re.sub(r"^(м\.?|с\.?|смт\.?|селище|село)\s+", "", first, flags=re.IGNORECASE)
+    return first or "—"
+
+
+def _build_compact_route(data: Dict[str, Any]) -> str:
+    load_city = _short_city_name(data.get("load_city"))
+    unload_cities = _split_location_values(data.get("unload_city"))
+    unload_main = _short_city_name(unload_cities[0] if unload_cities else data.get("unload_city"))
+    if len(unload_cities) > 1:
+        unload_main = f"{unload_main}+{len(unload_cities) - 1}"
+    return f"{load_city}→{unload_main}"
+
+
+def _get_summary_filters(context: ContextTypes.DEFAULT_TYPE) -> Dict[str, Any]:
+    filters = context.user_data.get("summary_filters")
+    if not isinstance(filters, dict):
+        filters = {"department": "ALL", "active_only": False}
+        context.user_data["summary_filters"] = filters
+    filters.setdefault("department", "ALL")
+    filters.setdefault("active_only", False)
+    return filters
+
+
+def _format_summary_entry_line(req: Dict[str, Any]) -> str:
+    rid = (req.get("request_id") or "—").strip().upper()
+    status = req.get("status") or "АКТИВНА"
+    data = req.get("request_data") or {}
+    if not isinstance(data, dict):
+        data = {}
+    initiator = str(data.get("initiator") or "—")
+    route = _build_compact_route(data)
+    volume_value = _to_float(data.get("volume"))
+    volume = _format_volume_for_size(str(data.get("size_type") or ""), volume_value) if volume_value is not None else "—"
+    return f"{rid} | {initiator} | {route} | {volume} | {status}"
+
+
+def _build_summary_export_text(date_str: str, entries: List[Dict[str, Any]]) -> str:
+    lines = [
+        f"Зведення за {date_str}",
+        "Формат: ID | Ініціатор | Маршрут | Обсяг | Статус",
+        "",
+    ]
+    for req in entries:
+        lines.append(_format_summary_entry_line(req))
+    return "\n".join(lines)
+
+
+async def _send_summary_csv(update: Update, context: ContextTypes.DEFAULT_TYPE, date_str: str, entries: List[Dict[str, Any]]) -> None:
+    output = io.StringIO()
+    writer = csv.writer(output, delimiter=';')
+    writer.writerow(["ID", "Ініціатор", "Маршрут", "Обсяг", "Статус"])
+    for req in entries:
+        line = _format_summary_entry_line(req)
+        parts = [part.strip() for part in line.split("|")]
+        writer.writerow(parts)
+
+    csv_bytes = io.BytesIO(output.getvalue().encode("utf-8-sig"))
+    csv_bytes.name = f"summary_{date_str.replace('.', '-')}.csv"
+    await context.bot.send_document(
+        chat_id=update.effective_chat.id,
+        document=InputFile(csv_bytes),
+        caption=f"📊 CSV зведення за {date_str}",
+    )
+
+
+async def _send_summary_png(update: Update, context: ContextTypes.DEFAULT_TYPE, date_str: str, entries: List[Dict[str, Any]]) -> None:
+    """Generate PNG image with compact summary and send it to chat."""
+    try:
+        from PIL import Image, ImageDraw, ImageFont
+    except Exception:
+        await update.effective_message.reply_text("❌ Для PNG-експорту відсутня бібліотека Pillow")
+        return
+
+    lines = [
+        f"Зведення за {date_str}",
+        "ID | Ініціатор | Маршрут | Обсяг | Статус",
+        "",
+    ]
+    for req in entries:
+        lines.append(_format_summary_entry_line(req))
+
+    if len(lines) > 120:
+        lines = lines[:120] + ["... (скорочено, використайте CSV для повного списку)"]
+
+    try:
+        font = ImageFont.truetype("DejaVuSans.ttf", 16)
+        title_font = ImageFont.truetype("DejaVuSans.ttf", 18)
+    except Exception:
+        font = ImageFont.load_default()
+        title_font = font
+
+    dummy_img = Image.new("RGB", (1, 1), "white")
+    draw = ImageDraw.Draw(dummy_img)
+    margin = 20
+    line_height = 24
+
+    max_width = 0
+    for idx, line in enumerate(lines):
+        current_font = title_font if idx == 0 else font
+        bbox = draw.textbbox((0, 0), line, font=current_font)
+        max_width = max(max_width, bbox[2] - bbox[0])
+
+    width = min(max(900, max_width + margin * 2), 2400)
+    height = margin * 2 + line_height * len(lines)
+    img = Image.new("RGB", (width, height), "white")
+    draw = ImageDraw.Draw(img)
+
+    y = margin
+    for idx, line in enumerate(lines):
+        current_font = title_font if idx == 0 else font
+        color = "#111111" if idx == 0 else "#222222"
+        draw.text((margin, y), line, fill=color, font=current_font)
+        y += line_height
+
+    png_bytes = io.BytesIO()
+    img.save(png_bytes, format="PNG", optimize=True)
+    png_bytes.seek(0)
+    png_bytes.name = f"summary_{date_str.replace('.', '-')}.png"
+
+    await context.bot.send_document(
+        chat_id=update.effective_chat.id,
+        document=InputFile(png_bytes),
+        caption=f"🖼️ PNG зведення за {date_str}",
+    )
+
+
+async def _render_admin_daily_summary(update: Update, context: ContextTypes.DEFAULT_TYPE, offset: int = 0) -> int:
+    date_str = context.user_data.get("summary_date")
+    if not date_str:
+        await update.effective_message.reply_text("❌ Спочатку оберіть дату для зведення")
+        return START
+
+    filters = _get_summary_filters(context)
+    department = filters.get("department", "ALL")
+    active_only = bool(filters.get("active_only", False))
+
+    entries = db.get_requests_by_date(
+        date_str=date_str,
+        department=None if department == "ALL" else department,
+        active_only=active_only,
+        limit=1000,
+    )
+    context.user_data["summary_entries"] = entries
+
+    total = len(entries)
+    active_count = len([r for r in entries if (r.get("status") or "").strip().upper() != "ВИДАЛЕНО"])
+    total_volume = 0.0
+    for req in entries:
+        data = req.get("request_data") or {}
+        if isinstance(data, dict):
+            v = _to_float(data.get("volume"))
+            if v is not None:
+                total_volume += v
+
+    if total == 0:
+        summary_text = (
+            f"📊 Зведення за {date_str}\n"
+            f"Фільтр відділу: {department}\n"
+            f"Тільки активні: {'Так' if active_only else 'Ні'}\n\n"
+            f"Заявок не знайдено"
+        )
+    else:
+        page = entries[offset:offset + SUMMARY_PAGE_SIZE]
+        lines = [
+            f"📊 Зведення за {date_str}",
+            f"Всього: {total} | Активні: {active_count} | Сумарний обсяг: {_format_number(total_volume)}",
+            f"Фільтр відділу: {department} | Тільки активні: {'Так' if active_only else 'Ні'}",
+            "",
+            "Формат: ID | Ініціатор | Маршрут | Обсяг | Статус",
+        ]
+        for req in page:
+            lines.append(_format_summary_entry_line(req))
+        summary_text = "\n".join(lines)
+
+    buttons: List[List[InlineKeyboardButton]] = []
+
+    page_items = entries[offset:offset + SUMMARY_PAGE_SIZE]
+    for req in page_items:
+        rid = (req.get("request_id") or "").strip().upper()
+        if rid:
+            buttons.append([InlineKeyboardButton(text=f"✏️ {rid}", callback_data=f"SUMEDIT:{rid}")])
+
+    dept = filters.get("department", "ALL")
+    buttons.append([
+        InlineKeyboardButton(text=("• Всі" if dept == "ALL" else "Всі"), callback_data="SUMDEPT:ALL"),
+        InlineKeyboardButton(text=("• Тваринництво" if dept == "Тваринництво" else "Тваринництво"), callback_data="SUMDEPT:Тваринництво"),
+        InlineKeyboardButton(text=("• Виробництво" if dept == "Виробництво" else "Виробництво"), callback_data="SUMDEPT:Виробництво"),
+    ])
+    buttons.append([
+        InlineKeyboardButton(
+            text=f"✅ Тільки активні: {'ON' if active_only else 'OFF'}",
+            callback_data="SUMTOGGLEACTIVE",
+        )
+    ])
+
+    nav_row: List[InlineKeyboardButton] = []
+    prev_offset = max(0, offset - SUMMARY_PAGE_SIZE)
+    next_offset = offset + SUMMARY_PAGE_SIZE
+    if offset > 0:
+        nav_row.append(InlineKeyboardButton(text="⬅️ Назад", callback_data=f"SUMPAGE:{prev_offset}"))
+    if next_offset < total:
+        nav_row.append(InlineKeyboardButton(text="➡️ Далі", callback_data=f"SUMPAGE:{next_offset}"))
+    if nav_row:
+        buttons.append(nav_row)
+
+    buttons.append([
+        InlineKeyboardButton(text="📄 TXT", callback_data="SUMEXP:TXT"),
+        InlineKeyboardButton(text="📊 CSV", callback_data="SUMEXP:CSV"),
+        InlineKeyboardButton(text="🖼️ PNG", callback_data="SUMEXP:PNG"),
+    ])
+    buttons.append([InlineKeyboardButton(text="📅 Інша дата", callback_data="SUMDATE")])
+
+    await update.effective_message.reply_text(summary_text, reply_markup=InlineKeyboardMarkup(buttons))
+    return START
 
 
 def _format_application(data: Dict[str, Any]) -> str:
@@ -701,6 +930,9 @@ async def show_start_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         [KeyboardButton(text="🔎 Пошук/редагування заявки")],
         [KeyboardButton(text="🆔 Мій ID")],
     ]
+
+    if _is_admin_user(update.effective_user):
+        buttons.append([KeyboardButton(text="📊 Зведення за датою")])
     
     if templates:
         buttons.append([KeyboardButton(text="📋 Завантажити шаблон")])
@@ -964,6 +1196,21 @@ async def handle_start_menu_choice(update: Update, context: ContextTypes.DEFAULT
             reply_markup=ReplyKeyboardRemove(),
         )
         return FIND_REQUEST_EDIT
+
+    elif text == "📊 Зведення за датою":
+        if not _is_admin_user(update.effective_user):
+            await update.message.reply_text("❌ Функція доступна лише адміну")
+            return START
+
+        context.user_data["summary_date"] = None
+        context.user_data["summary_filters"] = {"department": "ALL", "active_only": False}
+        today = date.today()
+        calendar_markup = _build_month_calendar(today.year, today.month, prefix=SUMMARY_CAL_PREFIX)
+        await update.message.reply_text(
+            "Оберіть дату для зведення:",
+            reply_markup=calendar_markup,
+        )
+        return SUMMARY_DATE_CALENDAR
     
     # Якщо користувач вже заповнюватиме - обробити продовження/рестарт
     if text == "Продовжити":
@@ -1797,6 +2044,114 @@ async def handle_period_end(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         return await ask_question(fake_update, context)
     
     return DATE_PERIOD_END
+
+
+async def handle_summary_calendar(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Обробка календаря для адмін-зведення."""
+    query = update.callback_query
+    if not query:
+        return START
+    await query.answer()
+
+    if not _is_admin_user(update.effective_user):
+        await query.answer("Тільки для адміна", show_alert=True)
+        return START
+
+    action, payload = _parse_calendar_callback(query.data, prefix=SUMMARY_CAL_PREFIX)
+    if action == "NAV" and payload:
+        year_str, month_str = payload.split("-")
+        calendar_markup = _build_month_calendar(int(year_str), int(month_str), prefix=SUMMARY_CAL_PREFIX)
+        await query.edit_message_text("Оберіть дату для зведення:", reply_markup=calendar_markup)
+        return SUMMARY_DATE_CALENDAR
+
+    if action == "DATE" and payload:
+        selected_dt = datetime.strptime(payload, "%Y-%m-%d").date()
+        selected_date = selected_dt.strftime("%d.%m.%Y")
+        context.user_data["summary_date"] = selected_date
+        context.user_data["summary_offset"] = 0
+        await query.edit_message_text(f"✅ Дата зведення: {selected_date}")
+        return await _render_admin_daily_summary(update, context, offset=0)
+
+    return SUMMARY_DATE_CALENDAR
+
+
+async def handle_summary_action_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Callback-дії для адмін-зведення: фільтри, пагінація, експорт, редагування."""
+    query = update.callback_query
+    if not query:
+        return START
+
+    await query.answer()
+    if not _is_admin_user(update.effective_user):
+        await query.answer("Тільки для адміна", show_alert=True)
+        return START
+
+    payload = query.data or ""
+    parts = payload.split(":", 2)
+    action = parts[0]
+    arg = parts[1] if len(parts) > 1 else ""
+
+    if action == "SUMPAGE":
+        try:
+            offset = max(0, int(arg))
+        except ValueError:
+            offset = 0
+        context.user_data["summary_offset"] = offset
+        return await _render_admin_daily_summary(update, context, offset=offset)
+
+    if action == "SUMTOGGLEACTIVE":
+        filters = _get_summary_filters(context)
+        filters["active_only"] = not bool(filters.get("active_only", False))
+        context.user_data["summary_offset"] = 0
+        return await _render_admin_daily_summary(update, context, offset=0)
+
+    if action == "SUMDEPT":
+        filters = _get_summary_filters(context)
+        chosen = arg if arg in {"ALL", "Тваринництво", "Виробництво"} else "ALL"
+        filters["department"] = chosen
+        context.user_data["summary_offset"] = 0
+        return await _render_admin_daily_summary(update, context, offset=0)
+
+    if action == "SUMDATE":
+        today = date.today()
+        calendar_markup = _build_month_calendar(today.year, today.month, prefix=SUMMARY_CAL_PREFIX)
+        await query.message.reply_text("Оберіть дату для зведення:", reply_markup=calendar_markup)
+        return SUMMARY_DATE_CALENDAR
+
+    if action == "SUMEXP":
+        export_type = arg.upper()
+        date_str = context.user_data.get("summary_date") or ""
+        entries = context.user_data.get("summary_entries") or []
+        if not date_str:
+            await query.message.reply_text("❌ Спочатку сформуйте зведення за датою")
+            return START
+        if export_type == "TXT":
+            text = _build_summary_export_text(date_str, entries)
+            text_bytes = io.BytesIO(text.encode("utf-8"))
+            text_bytes.name = f"summary_{date_str.replace('.', '-')}.txt"
+            await context.bot.send_document(
+                chat_id=update.effective_chat.id,
+                document=InputFile(text_bytes),
+                caption=f"📄 TXT зведення за {date_str}",
+            )
+            return START
+        if export_type == "CSV":
+            await _send_summary_csv(update, context, date_str, entries)
+            return START
+        if export_type == "PNG":
+            await _send_summary_png(update, context, date_str, entries)
+            return START
+
+    if action == "SUMEDIT":
+        request_id = arg.strip().upper()
+        if not request_id:
+            await query.answer("Порожній ID", show_alert=True)
+            return START
+        fake_update = type('obj', (object,), {'message': query.message, 'effective_user': update.effective_user})()
+        return await _open_request_for_edit_by_id(fake_update, context, request_id)
+
+    await query.answer("Невідома дія", show_alert=True)
+    return START
 
 
 async def _ask_unload_distribution_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -3798,12 +4153,16 @@ def build_app() -> Application:
             CommandHandler("my_requests", my_requests_command),
             CommandHandler("edit_request", edit_request_command),
             CallbackQueryHandler(handle_request_action_callback, pattern=r"^REQACT:"),
+            CallbackQueryHandler(handle_summary_calendar, pattern=r"^SUMCAL:"),
+            CallbackQueryHandler(handle_summary_action_callback, pattern=r"^SUM(EDIT|PAGE|DEPT|TOGGLEACTIVE|EXP|DATE)"),
             MessageHandler(filters.Regex("^📝 Зробити заявку$"), start),
         ],
         states={
             START: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_start_menu_choice),
                 CallbackQueryHandler(handle_request_action_callback, pattern=r"^REQACT:"),
+                CallbackQueryHandler(handle_summary_calendar, pattern=r"^SUMCAL:"),
+                CallbackQueryHandler(handle_summary_action_callback, pattern=r"^SUM(EDIT|PAGE|DEPT|TOGGLEACTIVE|EXP|DATE)"),
             ],
             LOAD_TEMPLATE: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_start_menu_choice),
@@ -3879,6 +4238,10 @@ def build_app() -> Application:
             ],
             FIND_REQUEST_EDIT: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_find_request_edit_input),
+                CommandHandler("cancel", cancel),
+            ],
+            SUMMARY_DATE_CALENDAR: [
+                CallbackQueryHandler(handle_summary_calendar, pattern=r"^SUMCAL:"),
                 CommandHandler("cancel", cancel),
             ],
             CONFIRM: [
