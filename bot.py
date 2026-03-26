@@ -1084,6 +1084,7 @@ async def _render_admin_daily_summary(update: Update, context: ContextTypes.DEFA
             buttons.append([
                 InlineKeyboardButton(text=f"✏️{rid_text}", callback_data=f"SUMEDIT:{rid_raw}"),
                 InlineKeyboardButton(text="🗑", callback_data=f"SUMDELASK:{rid_raw}"),
+                InlineKeyboardButton(text="📋", callback_data=f"SUMCOPY:{rid_raw}"),
             ])
 
     dept = filters.get("department", "ALL")
@@ -2506,6 +2507,46 @@ async def handle_summary_action_callback(update: Update, context: ContextTypes.D
             f"Підтвердьте видалення заявки {request_id}",
             reply_markup=confirm_keyboard,
         )
+        return START
+
+    if action == "SUMCOPY":
+        request_id = arg.strip()
+        if not request_id:
+            await query.answer("Порожній ID", show_alert=True)
+            return START
+        request = db.get_request(request_id)
+        if not request:
+            await query.answer("Заявку не знайдено", show_alert=True)
+            return START
+        if (request.get("status") or "").strip().upper() == "ВИДАЛЕНО":
+            await query.answer("Заявка видалена, копія неможлива", show_alert=True)
+            return START
+        source_data = request.get("request_data") or {}
+        if not isinstance(source_data, dict):
+            await query.answer("Помилка даних заявки", show_alert=True)
+            return START
+
+        new_request_id = str(uuid.uuid4())[:8].upper()
+        new_request_data = dict(source_data)
+        user_id = update.effective_user.id if update.effective_user else 0
+
+        db.save_request(request_id=new_request_id, user_id=user_id, request_data=new_request_data)
+
+        try:
+            sheets.upsert_request(new_request_id, new_request_data)
+        except Exception as e:
+            logging.error(f"Sheets upsert failed for copied request {new_request_id}: {e}")
+
+        try:
+            chat_id = os.getenv("TARGET_CHAT_ID")
+            if chat_id:
+                msg_text = _format_application(new_request_data)
+                sent = await context.bot.send_message(chat_id=chat_id, text=msg_text)
+                db.update_request_message_id(new_request_id, sent.message_id)
+        except Exception as e:
+            logging.error(f"Failed to send group message for copied request {new_request_id}: {e}")
+
+        await query.answer(f"✅ Скопійовано → {new_request_id}", show_alert=True)
         return START
 
     if action == "SUMDELNO":
@@ -4673,7 +4714,7 @@ def build_app() -> Application:
             CommandHandler("edit_request", edit_request_command),
             CallbackQueryHandler(handle_request_action_callback, pattern=r"^REQACT:"),
             CallbackQueryHandler(handle_summary_calendar, pattern=r"^SUMCAL:"),
-            CallbackQueryHandler(handle_summary_action_callback, pattern=r"^SUM(EDIT|DELASK|DELYES|DELNO|PAGE|DEPT|MODE|CARGO|CARGOIDX|TOGGLEACTIVE|EXP|DATE)"),
+            CallbackQueryHandler(handle_summary_action_callback, pattern=r"^SUM(EDIT|DELASK|DELYES|DELNO|COPY|PAGE|DEPT|MODE|CARGO|CARGOIDX|TOGGLEACTIVE|EXP|DATE)"),
             MessageHandler(filters.Regex("^📝 Зробити заявку$"), start),
         ],
         states={
@@ -4681,7 +4722,7 @@ def build_app() -> Application:
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_start_menu_choice),
                 CallbackQueryHandler(handle_request_action_callback, pattern=r"^REQACT:"),
                 CallbackQueryHandler(handle_summary_calendar, pattern=r"^SUMCAL:"),
-                CallbackQueryHandler(handle_summary_action_callback, pattern=r"^SUM(EDIT|DELASK|DELYES|DELNO|PAGE|DEPT|MODE|CARGO|CARGOIDX|TOGGLEACTIVE|EXP|DATE)"),
+                CallbackQueryHandler(handle_summary_action_callback, pattern=r"^SUM(EDIT|DELASK|DELYES|DELNO|COPY|PAGE|DEPT|MODE|CARGO|CARGOIDX|TOGGLEACTIVE|EXP|DATE)"),
             ],
             LOAD_TEMPLATE: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_start_menu_choice),
