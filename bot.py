@@ -4473,7 +4473,7 @@ def build_app() -> Application:
             CommandHandler("edit_request", edit_request_command),
             CallbackQueryHandler(handle_request_action_callback, pattern=r"^REQACT:"),
             CallbackQueryHandler(handle_summary_calendar, pattern=r"^SUMCAL:"),
-            CallbackQueryHandler(handle_summary_action_callback, pattern=r"^SUM(EDIT|DELASK|DELYES|DELNO|PAGE|DEPT|TOGGLEACTIVE|EXP|DATE)"),
+            CallbackQueryHandler(handle_summary_action_callback, pattern=r"^SUM(EDIT|DELASK|DELYES|DELNO|PAGE|DEPT|MODE|TOGGLEACTIVE|EXP|DATE)"),
             MessageHandler(filters.Regex("^📝 Зробити заявку$"), start),
         ],
         states={
@@ -4481,7 +4481,7 @@ def build_app() -> Application:
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_start_menu_choice),
                 CallbackQueryHandler(handle_request_action_callback, pattern=r"^REQACT:"),
                 CallbackQueryHandler(handle_summary_calendar, pattern=r"^SUMCAL:"),
-                CallbackQueryHandler(handle_summary_action_callback, pattern=r"^SUM(EDIT|DELASK|DELYES|DELNO|PAGE|DEPT|TOGGLEACTIVE|EXP|DATE)"),
+                CallbackQueryHandler(handle_summary_action_callback, pattern=r"^SUM(EDIT|DELASK|DELYES|DELNO|PAGE|DEPT|MODE|TOGGLEACTIVE|EXP|DATE)"),
             ],
             LOAD_TEMPLATE: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_start_menu_choice),
