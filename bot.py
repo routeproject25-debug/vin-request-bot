@@ -2527,27 +2527,32 @@ async def handle_summary_action_callback(update: Update, context: ContextTypes.D
             return START
 
         new_request_id = str(uuid.uuid4())[:8].upper()
-        new_request_data = dict(source_data)
-        user_id = update.effective_user.id if update.effective_user else 0
 
-        db.save_request(request_id=new_request_id, user_id=user_id, request_data=new_request_data)
+        # Завантажуємо дані копії в context як нову заявку в режимі редагування
+        context.user_data.clear()
+        context.user_data.update(source_data)
+        context.user_data["request_id"] = new_request_id
+        context.user_data["last_request_id"] = new_request_id
+        context.user_data["editing_mode"] = True
+        context.user_data["is_request_edit"] = False  # копія — нова заявка, не оновлення
+        context.user_data["is_copy"] = True
+        context.user_data["copy_source_id"] = request_id.upper()
+        context.user_data["original_request_data"] = dict(source_data)
 
-        try:
-            sheets.upsert_request(new_request_id, new_request_data)
-        except Exception as e:
-            logging.error(f"Sheets upsert failed for copied request {new_request_id}: {e}")
+        # Повідомляємо і відкриваємо поля для редагування
+        fake_msg = query.message
+        class _FakeUpdate:
+            message = fake_msg
+            effective_user = update.effective_user
+            effective_chat = update.effective_chat
+            callback_query = None
 
-        try:
-            chat_id = os.getenv("TARGET_CHAT_ID")
-            if chat_id:
-                msg_text = _format_application(new_request_data)
-                sent = await context.bot.send_message(chat_id=chat_id, text=msg_text)
-                db.update_request_message_id(new_request_id, sent.message_id)
-        except Exception as e:
-            logging.error(f"Failed to send group message for copied request {new_request_id}: {e}")
-
-        await query.answer(f"✅ Скопійовано → {new_request_id}", show_alert=True)
-        return START
+        await query.answer()
+        await fake_msg.reply_text(
+            f"📋 Копія заявки {request_id.upper()} → новий ID: {new_request_id}\n"
+            "Відредагуйте потрібні поля та збережіть заявку."
+        )
+        return await show_edit_fields(_FakeUpdate(), context)
 
     if action == "SUMDELNO":
         await query.answer("Видалення скасовано")
@@ -4653,42 +4658,31 @@ async def handle_copy_request_confirm(update: Update, context: ContextTypes.DEFA
         await query.edit_message_text("❌ Дані для копіювання втрачено, спробуйте знову")
         return START
 
-    new_request_data = dict(source_data)
     new_request_id = str(uuid.uuid4())[:8].upper()
 
-    user = update.effective_user
-    user_id = user.id if user else 0
-
-    db.save_request(
-        request_id=new_request_id,
-        user_id=user_id,
-        request_data=new_request_data,
-    )
-
-    try:
-        sheets.upsert_request(new_request_id, new_request_data)
-    except Exception as e:
-        logging.error(f"Sheets upsert failed for copied request {new_request_id}: {e}")
-
-    try:
-        chat_id = os.getenv("TARGET_CHAT_ID")
-        if chat_id:
-            text = _format_application(new_request_data)
-            sent = await context.bot.send_message(
-                chat_id=chat_id,
-                text=text,
-            )
-            db.update_request_message_id(new_request_id, sent.message_id)
-    except Exception as e:
-        logging.error(f"Failed to send group message for copied request {new_request_id}: {e}")
-
+    # Завантажуємо скопійовані дані як нову заявку в режимі редагування
+    context.user_data.clear()
+    context.user_data.update(source_data)
+    context.user_data["request_id"] = new_request_id
     context.user_data["last_request_id"] = new_request_id
+    context.user_data["editing_mode"] = True
+    context.user_data["is_request_edit"] = False  # копія — нова заявка, не оновлення
+    context.user_data["is_copy"] = True
+    context.user_data["copy_source_id"] = source_id.upper() if source_id else ""
+    context.user_data["original_request_data"] = dict(source_data)
+
+    # Відкриваємо поля для редагування
+    class _FakeUpdate:
+        message = query.message
+        effective_user = update.effective_user
+        effective_chat = update.effective_chat
+        callback_query = None
+
     await query.edit_message_text(
-        f"✅ Копію створено: {new_request_id}\n"
-        f"(скопійовано з {source_id})\n\n"
-        "Ви можете одразу відредагувати нову заявку через 🔎 Пошук/редагування заявки."
+        f"📋 Копія заявки {source_id.upper() if source_id else '?'} → новий ID: {new_request_id}\n"
+        "Відредагуйте потрібні поля та збережіть заявку."
     )
-    return START
+    return await show_edit_fields(_FakeUpdate(), context)
 
 
 async def handle_make_request_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
