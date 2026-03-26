@@ -663,11 +663,12 @@ def _build_compact_route(data: Dict[str, Any]) -> str:
 def _get_summary_filters(context: ContextTypes.DEFAULT_TYPE) -> Dict[str, Any]:
     filters = context.user_data.get("summary_filters")
     if not isinstance(filters, dict):
-        filters = {"department": "ALL", "active_only": False, "date_basis": "CREATED"}
+        filters = {"department": "ALL", "active_only": False, "date_basis": "CREATED", "cargo_type": "ALL"}
         context.user_data["summary_filters"] = filters
     filters.setdefault("department", "ALL")
     filters.setdefault("active_only", False)
     filters.setdefault("date_basis", "CREATED")
+    filters.setdefault("cargo_type", "ALL")
     return filters
 
 
@@ -979,6 +980,7 @@ async def _render_admin_daily_summary(update: Update, context: ContextTypes.DEFA
     department = filters.get("department", "ALL")
     active_only = bool(filters.get("active_only", False))
     date_basis = filters.get("date_basis", "CREATED")
+    cargo_type = filters.get("cargo_type", "ALL")
 
     if date_basis == "DELIVERY":
         try:
@@ -992,7 +994,7 @@ async def _render_admin_daily_summary(update: Update, context: ContextTypes.DEFA
             active_only=active_only,
             limit=5000,
         )
-        entries = []
+        entries_base = []
         for req in raw_entries:
             calc = _delivery_daily_volume(req, target_day)
             if not calc:
@@ -1002,14 +1004,39 @@ async def _render_admin_daily_summary(update: Update, context: ContextTypes.DEFA
             req_copy["_daily_volume"] = daily_volume
             req_copy["_delivery_days"] = days
             req_copy["_is_delivery_split"] = days > 1
-            entries.append(req_copy)
+            entries_base.append(req_copy)
     else:
-        entries = db.get_requests_by_date(
+        entries_base = db.get_requests_by_date(
             date_str=date_str,
             department=None if department == "ALL" else department,
             active_only=active_only,
             limit=1000,
         )
+
+    cargo_options = []
+    for req in entries_base:
+        data = req.get("request_data") or {}
+        if not isinstance(data, dict):
+            continue
+        cargo = str(data.get("cargo_type") or "").strip()
+        if cargo and cargo not in cargo_options:
+            cargo_options.append(cargo)
+
+    context.user_data["summary_cargo_options"] = cargo_options
+    if cargo_type != "ALL" and cargo_type not in cargo_options:
+        cargo_type = "ALL"
+        filters["cargo_type"] = "ALL"
+
+    if cargo_type == "ALL":
+        entries = entries_base
+    else:
+        entries = []
+        for req in entries_base:
+            data = req.get("request_data") or {}
+            if not isinstance(data, dict):
+                continue
+            if str(data.get("cargo_type") or "").strip() == cargo_type:
+                entries.append(req)
 
     context.user_data["summary_entries"] = entries
 
@@ -1019,7 +1046,9 @@ async def _render_admin_daily_summary(update: Update, context: ContextTypes.DEFA
     for req in entries:
         data = req.get("request_data") or {}
         if isinstance(data, dict):
-            v = _to_float(data.get("volume"))
+            v = _to_float(req.get("_daily_volume"))
+            if v is None:
+                v = _to_float(data.get("volume"))
             if v is not None:
                 total_volume += v
 
@@ -1028,6 +1057,7 @@ async def _render_admin_daily_summary(update: Update, context: ContextTypes.DEFA
             f"📊 Зведення за {date_str}\n"
             f"Режим дати: {'Створення' if date_basis == 'CREATED' else 'Перевезення (розподіл)'}\n"
             f"Фільтр відділу: {department}\n"
+            f"Фільтр вантажу: {cargo_type}\n"
             f"Тільки активні: {'Так' if active_only else 'Ні'}\n\n"
             f"Заявок не знайдено"
         )
@@ -1036,7 +1066,7 @@ async def _render_admin_daily_summary(update: Update, context: ContextTypes.DEFA
             f"📊 Зведення за {date_str}",
             f"Режим дати: {'Створення' if date_basis == 'CREATED' else 'Перевезення (розподіл по днях)'}",
             f"Всього: {total} | Активні: {active_count} | Сумарний обсяг: {_format_number(total_volume)}",
-            f"Фільтр відділу: {department} | Тільки активні: {'Так' if active_only else 'Ні'}",
+            f"Фільтр відділу: {department} | Вантаж: {cargo_type} | Тільки активні: {'Так' if active_only else 'Ні'}",
             "",
             "N | ID | Ініціатор | Вантаж | Маршрут | Обсяг | Статус",
         ]
@@ -1048,11 +1078,12 @@ async def _render_admin_daily_summary(update: Update, context: ContextTypes.DEFA
 
     page_items = entries[offset:offset + SUMMARY_BUTTONS_PAGE_SIZE]
     for req in page_items:
-        rid = (req.get("request_id") or "").strip().upper()
-        if rid:
+        rid_raw = (req.get("request_id") or "").strip()
+        rid_text = rid_raw.upper()
+        if rid_raw:
             buttons.append([
-                InlineKeyboardButton(text=f"✏️{rid}", callback_data=f"SUMEDIT:{rid}"),
-                InlineKeyboardButton(text="🗑", callback_data=f"SUMDELASK:{rid}"),
+                InlineKeyboardButton(text=f"✏️{rid_text}", callback_data=f"SUMEDIT:{rid_raw}"),
+                InlineKeyboardButton(text="🗑", callback_data=f"SUMDELASK:{rid_raw}"),
             ])
 
     dept = filters.get("department", "ALL")
@@ -1077,6 +1108,21 @@ async def _render_admin_daily_summary(update: Update, context: ContextTypes.DEFA
             callback_data="SUMTOGGLEACTIVE",
         )
     ])
+
+    cargo_buttons: List[InlineKeyboardButton] = [
+        InlineKeyboardButton(
+            text=("• Всі вантажі" if cargo_type == "ALL" else "Всі вантажі"),
+            callback_data="SUMCARGO:ALL",
+        )
+    ]
+    for idx, cargo in enumerate(cargo_options):
+        label = cargo if len(cargo) <= 18 else (cargo[:17].rstrip() + "…")
+        if cargo == cargo_type:
+            label = f"• {label}"
+        cargo_buttons.append(InlineKeyboardButton(text=label, callback_data=f"SUMCARGOIDX:{idx}"))
+
+    for i in range(0, len(cargo_buttons), 3):
+        buttons.append(cargo_buttons[i:i + 3])
 
     nav_row: List[InlineKeyboardButton] = []
     prev_offset = max(0, offset - SUMMARY_BUTTONS_PAGE_SIZE)
@@ -1458,7 +1504,7 @@ async def handle_start_menu_choice(update: Update, context: ContextTypes.DEFAULT
             return START
 
         context.user_data["summary_date"] = None
-        context.user_data["summary_filters"] = {"department": "ALL", "active_only": False, "date_basis": "CREATED"}
+        context.user_data["summary_filters"] = {"department": "ALL", "active_only": False, "date_basis": "CREATED", "cargo_type": "ALL"}
         today = date.today()
         calendar_markup = _build_month_calendar(today.year, today.month, prefix=SUMMARY_CAL_PREFIX)
         await update.message.reply_text(
@@ -2371,6 +2417,26 @@ async def handle_summary_action_callback(update: Update, context: ContextTypes.D
         filters = _get_summary_filters(context)
         chosen_mode = arg.strip().upper()
         filters["date_basis"] = "DELIVERY" if chosen_mode == "DELIVERY" else "CREATED"
+        context.user_data["summary_offset"] = 0
+        return await _render_admin_daily_summary(update, context, offset=0)
+
+    if action == "SUMCARGO":
+        filters = _get_summary_filters(context)
+        filters["cargo_type"] = "ALL"
+        context.user_data["summary_offset"] = 0
+        return await _render_admin_daily_summary(update, context, offset=0)
+
+    if action == "SUMCARGOIDX":
+        filters = _get_summary_filters(context)
+        options = context.user_data.get("summary_cargo_options") or []
+        try:
+            idx = int(arg)
+        except ValueError:
+            idx = -1
+        if 0 <= idx < len(options):
+            filters["cargo_type"] = str(options[idx])
+        else:
+            filters["cargo_type"] = "ALL"
         context.user_data["summary_offset"] = 0
         return await _render_admin_daily_summary(update, context, offset=0)
 
@@ -4473,7 +4539,7 @@ def build_app() -> Application:
             CommandHandler("edit_request", edit_request_command),
             CallbackQueryHandler(handle_request_action_callback, pattern=r"^REQACT:"),
             CallbackQueryHandler(handle_summary_calendar, pattern=r"^SUMCAL:"),
-            CallbackQueryHandler(handle_summary_action_callback, pattern=r"^SUM(EDIT|DELASK|DELYES|DELNO|PAGE|DEPT|MODE|TOGGLEACTIVE|EXP|DATE)"),
+            CallbackQueryHandler(handle_summary_action_callback, pattern=r"^SUM(EDIT|DELASK|DELYES|DELNO|PAGE|DEPT|MODE|CARGO|CARGOIDX|TOGGLEACTIVE|EXP|DATE)"),
             MessageHandler(filters.Regex("^📝 Зробити заявку$"), start),
         ],
         states={
@@ -4481,7 +4547,7 @@ def build_app() -> Application:
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_start_menu_choice),
                 CallbackQueryHandler(handle_request_action_callback, pattern=r"^REQACT:"),
                 CallbackQueryHandler(handle_summary_calendar, pattern=r"^SUMCAL:"),
-                CallbackQueryHandler(handle_summary_action_callback, pattern=r"^SUM(EDIT|DELASK|DELYES|DELNO|PAGE|DEPT|MODE|TOGGLEACTIVE|EXP|DATE)"),
+                CallbackQueryHandler(handle_summary_action_callback, pattern=r"^SUM(EDIT|DELASK|DELYES|DELNO|PAGE|DEPT|MODE|CARGO|CARGOIDX|TOGGLEACTIVE|EXP|DATE)"),
             ],
             LOAD_TEMPLATE: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_start_menu_choice),

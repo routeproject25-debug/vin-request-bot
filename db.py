@@ -334,9 +334,14 @@ def get_request(request_id: str) -> Optional[Dict[str, Any]]:
         
         cursor.execute(
             """
-            SELECT * FROM requests WHERE request_id = %s
+            SELECT *
+            FROM requests
+            WHERE request_id = %s
+               OR UPPER(request_id) = UPPER(%s)
+            ORDER BY CASE WHEN request_id = %s THEN 0 ELSE 1 END
+            LIMIT 1
             """,
-            (request_id,)
+            (request_id, request_id, request_id)
         )
         
         request = cursor.fetchone()
