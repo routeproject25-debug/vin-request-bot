@@ -64,7 +64,7 @@ logging.getLogger().addFilter(_RedactBotTokenFilter())
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
 
-START, DEPARTMENT, QUESTION, CUSTOM_INPUT, CROP_TYPE, CONFIRM, EDIT, DATE_TYPE, DATE_CALENDAR, DATE_PERIOD_END, LOAD_TEMPLATE, TEMPLATE_SELECT, SAVE_TEMPLATE_NAME, SAVE_TEMPLATE_CONFIRM, DELETE_TEMPLATE_CONFIRM, CITY_SEARCH_LOAD, CITY_SELECT_LOAD, CITY_SEARCH_UNLOAD, CITY_SELECT_UNLOAD, UNLOAD_DISTRIBUTION, CHILD_EDIT_MENU, CHILD_EDIT_CITY, CHILD_EDIT_VOLUME, FIND_REQUEST_EDIT, SUMMARY_DATE_CALENDAR = range(25)
+START, DEPARTMENT, QUESTION, CUSTOM_INPUT, CROP_TYPE, CONFIRM, EDIT, DATE_TYPE, DATE_CALENDAR, DATE_PERIOD_END, LOAD_TEMPLATE, TEMPLATE_SELECT, SAVE_TEMPLATE_NAME, SAVE_TEMPLATE_CONFIRM, DELETE_TEMPLATE_CONFIRM, CITY_SEARCH_LOAD, CITY_SELECT_LOAD, CITY_SEARCH_UNLOAD, CITY_SELECT_UNLOAD, UNLOAD_DISTRIBUTION, CHILD_EDIT_MENU, CHILD_EDIT_CITY, CHILD_EDIT_VOLUME, FIND_REQUEST_EDIT, SUMMARY_DATE_CALENDAR, COPY_REQUEST_ID = range(26)
 
 THREAD_IDS = {
     "Тваринництво": 2,
@@ -1224,6 +1224,7 @@ async def show_start_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         "⚡ Швидка заявка",
         "📋 Мої заявки",
         "🔎 Пошук/редагування заявки",
+        "📋 Копіювати заявку",
         "🆔 Мій ID",
     ]
 
@@ -1497,6 +1498,18 @@ async def handle_start_menu_choice(update: Update, context: ContextTypes.DEFAULT
             reply_markup=ReplyKeyboardRemove(),
         )
         return FIND_REQUEST_EDIT
+
+    elif text == "📋 Копіювати заявку":
+        await update.message.reply_text(
+            "Введіть ID заявки для копіювання:\n"
+            "Приклад: A1B2C3D4",
+            reply_markup=ReplyKeyboardMarkup(
+                [[KeyboardButton(text="⬅️ Назад")]],
+                resize_keyboard=True,
+                one_time_keyboard=True,
+            ),
+        )
+        return COPY_REQUEST_ID
 
     elif text == "📊 Зведення за датою":
         if not _is_admin_user(update.effective_user):
@@ -4516,6 +4529,127 @@ async def handle_find_request_edit_input(update: Update, context: ContextTypes.D
     return await _open_request_for_edit_by_id(update, context, text)
 
 
+async def handle_copy_request_id_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Handle request ID entered for copying."""
+    text = (update.message.text or "").strip()
+    if not text:
+        await update.message.reply_text("❌ Введіть ID заявки")
+        return COPY_REQUEST_ID
+
+    if text == "⬅️ Назад":
+        return await show_start_menu(update, context)
+
+    request = db.get_request(text)
+    if not request:
+        await update.message.reply_text(
+            f"❌ Заявку з ID {text.upper()} не знайдено.\n"
+            "Спробуйте ще раз або натисніть ⬅️ Назад."
+        )
+        return COPY_REQUEST_ID
+
+    if (request.get("status") or "").strip().upper() == "ВИДАЛЕНО":
+        await update.message.reply_text(
+            f"❌ Заявка {text.upper()} видалена і не може бути скопійована."
+        )
+        return COPY_REQUEST_ID
+
+    request_data = request.get("request_data") or {}
+    if not isinstance(request_data, dict):
+        await update.message.reply_text("❌ Не вдалося прочитати дані заявки.")
+        return COPY_REQUEST_ID
+
+    context.user_data["copy_source_id"] = request.get("request_id", text).strip().upper()
+    context.user_data["copy_source_data"] = dict(request_data)
+
+    cargo = str(request_data.get("cargo_type") or "—")
+    route = _build_compact_route(request_data)
+    volume_value = _to_float(request_data.get("volume"))
+    volume = _format_volume_for_size(str(request_data.get("size_type") or ""), volume_value) if volume_value is not None else "—"
+    date_period = str(request_data.get("date_period") or "—")
+    initiator = str(request_data.get("initiator") or "—")
+
+    preview = (
+        f"📋 Копіювати заявку {context.user_data['copy_source_id']}?\n\n"
+        f"👤 Ініціатор: {initiator}\n"
+        f"📦 Вантаж: {cargo}\n"
+        f"📍 Маршрут: {route}\n"
+        f"⚖️ Обсяг: {volume}\n"
+        f"📅 Дата перевезення: {date_period}\n\n"
+        "Буде створена нова заявка з тими самими параметрами.\n"
+        "Ви зможете її відредагувати після створення."
+    )
+    confirm_keyboard = InlineKeyboardMarkup([[
+        InlineKeyboardButton(text="✅ Копіювати", callback_data="COPYREQ:YES"),
+        InlineKeyboardButton(text="❌ Скасувати", callback_data="COPYREQ:NO"),
+    ]])
+    await update.message.reply_text(preview, reply_markup=confirm_keyboard)
+    return COPY_REQUEST_ID
+
+
+async def handle_copy_request_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Handle YES/NO confirmation for copying a request."""
+    query = update.callback_query
+    if not query:
+        return START
+    await query.answer()
+
+    action = (query.data or "").split(":", 1)[1] if ":" in (query.data or "") else ""
+
+    if action != "YES":
+        await query.edit_message_text("❌ Копіювання скасовано")
+        context.user_data.pop("copy_source_id", None)
+        context.user_data.pop("copy_source_data", None)
+        return await show_start_menu(
+            type('obj', (object,), {'message': query.message, 'effective_user': update.effective_user,
+                                    'effective_chat': update.effective_chat})(),
+            context,
+        )
+
+    source_data = context.user_data.pop("copy_source_data", {})
+    source_id = context.user_data.pop("copy_source_id", "")
+
+    if not source_data:
+        await query.edit_message_text("❌ Дані для копіювання втрачено, спробуйте знову")
+        return START
+
+    new_request_data = dict(source_data)
+    new_request_id = str(uuid.uuid4())[:8].upper()
+
+    user = update.effective_user
+    user_id = user.id if user else 0
+
+    db.save_request(
+        request_id=new_request_id,
+        user_id=user_id,
+        request_data=new_request_data,
+    )
+
+    try:
+        sheets.upsert_request(new_request_id, new_request_data)
+    except Exception as e:
+        logging.error(f"Sheets upsert failed for copied request {new_request_id}: {e}")
+
+    try:
+        chat_id = os.getenv("TARGET_CHAT_ID")
+        if chat_id:
+            text = _format_application(new_request_data)
+            sent = await context.bot.send_message(
+                chat_id=chat_id,
+                text=text,
+            )
+            db.update_request_message_id(new_request_id, sent.message_id)
+    except Exception as e:
+        logging.error(f"Failed to send group message for copied request {new_request_id}: {e}")
+
+    context.user_data["last_request_id"] = new_request_id
+    await query.edit_message_text(
+        f"✅ Копію створено: {new_request_id}\n"
+        f"(скопійовано з {source_id})\n\n"
+        "Ви можете одразу відредагувати нову заявку через 🔎 Пошук/редагування заявки."
+    )
+    return START
+
+
 async def handle_make_request_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Обробка кнопки 📝 Зробити заявку поза ConversationHandler"""
     if update.message.text == "📝 Зробити заявку":
@@ -4623,6 +4757,11 @@ def build_app() -> Application:
             ],
             FIND_REQUEST_EDIT: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_find_request_edit_input),
+                CommandHandler("cancel", cancel),
+            ],
+            COPY_REQUEST_ID: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_copy_request_id_input),
+                CallbackQueryHandler(handle_copy_request_confirm, pattern=r"^COPYREQ:"),
                 CommandHandler("cancel", cancel),
             ],
             SUMMARY_DATE_CALENDAR: [
