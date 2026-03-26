@@ -489,3 +489,38 @@ def get_requests_by_date(
     except Exception as e:
         logger.error(f"Error fetching requests by date: {e}")
         return []
+
+
+def get_requests_for_delivery_summary(
+    department: Optional[str] = None,
+    active_only: bool = False,
+    limit: int = 5000,
+) -> List[Dict[str, Any]]:
+    """Отримати заявки-кандидати для зведення по даті перевезення."""
+    try:
+        conn = get_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+
+        dept_filter = (department or "").strip()
+        if dept_filter.upper() == "ALL":
+            dept_filter = ""
+
+        cursor.execute(
+            """
+            SELECT *
+            FROM requests
+            WHERE (%s = '' OR COALESCE(request_data->>'department', '') = %s)
+              AND (%s = FALSE OR COALESCE(status, 'АКТИВНА') != 'ВИДАЛЕНО')
+            ORDER BY created_at DESC
+            LIMIT %s
+            """,
+            (dept_filter, dept_filter, active_only, limit),
+        )
+
+        rows = cursor.fetchall()
+        cursor.close()
+        conn.close()
+        return [dict(row) for row in rows]
+    except Exception as e:
+        logger.error(f"Error fetching requests for delivery summary: {e}")
+        return []

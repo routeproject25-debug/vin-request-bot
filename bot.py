@@ -9,7 +9,7 @@ import unicodedata
 import aiohttp
 import pytz
 from typing import Dict, Any, List, Optional, Tuple
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 from telegram_bot_calendar import DetailedTelegramCalendar
 import db
 import sheets
@@ -663,11 +663,66 @@ def _build_compact_route(data: Dict[str, Any]) -> str:
 def _get_summary_filters(context: ContextTypes.DEFAULT_TYPE) -> Dict[str, Any]:
     filters = context.user_data.get("summary_filters")
     if not isinstance(filters, dict):
-        filters = {"department": "ALL", "active_only": False}
+        filters = {"department": "ALL", "active_only": False, "date_basis": "CREATED"}
         context.user_data["summary_filters"] = filters
     filters.setdefault("department", "ALL")
     filters.setdefault("active_only", False)
+    filters.setdefault("date_basis", "CREATED")
     return filters
+
+
+def _parse_ua_date(text: Any) -> Optional[date]:
+    raw = str(text or "").strip()
+    if not raw:
+        return None
+    for fmt in ("%d.%m.%Y", "%d.%m.%y"):
+        try:
+            return datetime.strptime(raw, fmt).date()
+        except ValueError:
+            continue
+    return None
+
+
+def _extract_delivery_range(request_data: Dict[str, Any]) -> Optional[Tuple[date, date]]:
+    period_raw = str((request_data or {}).get("date_period") or "").strip()
+    if not period_raw:
+        return None
+
+    if " - " in period_raw:
+        left, right = period_raw.split(" - ", 1)
+        start_dt = _parse_ua_date(left)
+        end_dt = _parse_ua_date(right)
+        if not start_dt or not end_dt:
+            return None
+        if end_dt < start_dt:
+            start_dt, end_dt = end_dt, start_dt
+        return start_dt, end_dt
+
+    single_dt = _parse_ua_date(period_raw)
+    if not single_dt:
+        return None
+    return single_dt, single_dt
+
+
+def _delivery_daily_volume(req: Dict[str, Any], target_day: date) -> Optional[Tuple[float, int]]:
+    data = req.get("request_data") or {}
+    if not isinstance(data, dict):
+        return None
+
+    period = _extract_delivery_range(data)
+    if not period:
+        return None
+
+    start_dt, end_dt = period
+    if target_day < start_dt or target_day > end_dt:
+        return None
+
+    total_volume = _to_float(data.get("volume"))
+    if total_volume is None:
+        return None
+
+    days = max((end_dt - start_dt).days + 1, 1)
+    return total_volume / days, days
 
 
 def _format_summary_entry_line(req: Dict[str, Any]) -> str:
@@ -679,8 +734,12 @@ def _format_summary_entry_line(req: Dict[str, Any]) -> str:
     initiator = str(data.get("initiator") or "—")
     cargo = str(data.get("cargo_type") or "—")
     route = _build_compact_route(data)
-    volume_value = _to_float(data.get("volume"))
+    volume_value = _to_float(req.get("_daily_volume"))
+    if volume_value is None:
+        volume_value = _to_float(data.get("volume"))
     volume = _format_volume_for_size(str(data.get("size_type") or ""), volume_value) if volume_value is not None else "—"
+    if req.get("_is_delivery_split"):
+        volume = f"~{volume}"
     return f"{rid} | {initiator} | {cargo} | {route} | {volume} | {status}"
 
 
@@ -724,8 +783,12 @@ def _format_summary_entry_compact_line(req: Dict[str, Any], index: int) -> str:
     initiator = _truncate_text(data.get("initiator") or "—", 16)
     cargo = _truncate_text(data.get("cargo_type") or "—", 14)
     route = _truncate_text(_build_compact_route(data), 22)
-    volume_value = _to_float(data.get("volume"))
+    volume_value = _to_float(req.get("_daily_volume"))
+    if volume_value is None:
+        volume_value = _to_float(data.get("volume"))
     volume = _format_volume_for_size(str(data.get("size_type") or ""), volume_value) if volume_value is not None else "—"
+    if req.get("_is_delivery_split"):
+        volume = f"~{volume}"
 
     return f"{index}. {rid} | {initiator} | {cargo} | {route} | {volume} | {status_short}"
 
@@ -915,13 +978,39 @@ async def _render_admin_daily_summary(update: Update, context: ContextTypes.DEFA
     filters = _get_summary_filters(context)
     department = filters.get("department", "ALL")
     active_only = bool(filters.get("active_only", False))
+    date_basis = filters.get("date_basis", "CREATED")
 
-    entries = db.get_requests_by_date(
-        date_str=date_str,
-        department=None if department == "ALL" else department,
-        active_only=active_only,
-        limit=1000,
-    )
+    if date_basis == "DELIVERY":
+        try:
+            target_day = datetime.strptime(date_str, "%d.%m.%Y").date()
+        except ValueError:
+            await update.effective_message.reply_text("❌ Невірний формат дати для зведення")
+            return START
+
+        raw_entries = db.get_requests_for_delivery_summary(
+            department=None if department == "ALL" else department,
+            active_only=active_only,
+            limit=5000,
+        )
+        entries = []
+        for req in raw_entries:
+            calc = _delivery_daily_volume(req, target_day)
+            if not calc:
+                continue
+            daily_volume, days = calc
+            req_copy = dict(req)
+            req_copy["_daily_volume"] = daily_volume
+            req_copy["_delivery_days"] = days
+            req_copy["_is_delivery_split"] = days > 1
+            entries.append(req_copy)
+    else:
+        entries = db.get_requests_by_date(
+            date_str=date_str,
+            department=None if department == "ALL" else department,
+            active_only=active_only,
+            limit=1000,
+        )
+
     context.user_data["summary_entries"] = entries
 
     total = len(entries)
@@ -937,6 +1026,7 @@ async def _render_admin_daily_summary(update: Update, context: ContextTypes.DEFA
     if total == 0:
         summary_text = (
             f"📊 Зведення за {date_str}\n"
+            f"Режим дати: {'Створення' if date_basis == 'CREATED' else 'Перевезення (розподіл)'}\n"
             f"Фільтр відділу: {department}\n"
             f"Тільки активні: {'Так' if active_only else 'Ні'}\n\n"
             f"Заявок не знайдено"
@@ -944,6 +1034,7 @@ async def _render_admin_daily_summary(update: Update, context: ContextTypes.DEFA
     else:
         lines = [
             f"📊 Зведення за {date_str}",
+            f"Режим дати: {'Створення' if date_basis == 'CREATED' else 'Перевезення (розподіл по днях)'}",
             f"Всього: {total} | Активні: {active_count} | Сумарний обсяг: {_format_number(total_volume)}",
             f"Фільтр відділу: {department} | Тільки активні: {'Так' if active_only else 'Ні'}",
             "",
@@ -969,6 +1060,16 @@ async def _render_admin_daily_summary(update: Update, context: ContextTypes.DEFA
         InlineKeyboardButton(text=("• Всі" if dept == "ALL" else "Всі"), callback_data="SUMDEPT:ALL"),
         InlineKeyboardButton(text=("• Тваринництво" if dept == "Тваринництво" else "Тваринництво"), callback_data="SUMDEPT:Тваринництво"),
         InlineKeyboardButton(text=("• Виробництво" if dept == "Виробництво" else "Виробництво"), callback_data="SUMDEPT:Виробництво"),
+    ])
+    buttons.append([
+        InlineKeyboardButton(
+            text=("• Дата створення" if date_basis == "CREATED" else "Дата створення"),
+            callback_data="SUMMODE:CREATED",
+        ),
+        InlineKeyboardButton(
+            text=("• Дата перевезення" if date_basis == "DELIVERY" else "Дата перевезення"),
+            callback_data="SUMMODE:DELIVERY",
+        ),
     ])
     buttons.append([
         InlineKeyboardButton(
@@ -1357,7 +1458,7 @@ async def handle_start_menu_choice(update: Update, context: ContextTypes.DEFAULT
             return START
 
         context.user_data["summary_date"] = None
-        context.user_data["summary_filters"] = {"department": "ALL", "active_only": False}
+        context.user_data["summary_filters"] = {"department": "ALL", "active_only": False, "date_basis": "CREATED"}
         today = date.today()
         calendar_markup = _build_month_calendar(today.year, today.month, prefix=SUMMARY_CAL_PREFIX)
         await update.message.reply_text(
@@ -2263,6 +2364,13 @@ async def handle_summary_action_callback(update: Update, context: ContextTypes.D
         filters = _get_summary_filters(context)
         chosen = arg if arg in {"ALL", "Тваринництво", "Виробництво"} else "ALL"
         filters["department"] = chosen
+        context.user_data["summary_offset"] = 0
+        return await _render_admin_daily_summary(update, context, offset=0)
+
+    if action == "SUMMODE":
+        filters = _get_summary_filters(context)
+        chosen_mode = arg.strip().upper()
+        filters["date_basis"] = "DELIVERY" if chosen_mode == "DELIVERY" else "CREATED"
         context.user_data["summary_offset"] = 0
         return await _render_admin_daily_summary(update, context, offset=0)
 
