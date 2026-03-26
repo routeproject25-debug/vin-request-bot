@@ -4027,11 +4027,8 @@ async def my_requests_command(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     requests = db.get_user_requests(user.id, limit=50)
     if not requests:
-        await update.message.reply_text(
-            "У вас ще немає збережених заявок.",
-            reply_markup=ReplyKeyboardRemove()
-        )
-        return START
+        await update.message.reply_text("У вас ще немає збережених заявок.")
+        return await show_start_menu(update, context)
 
     entries = _build_request_display_entries(requests)
     total = len(entries)
