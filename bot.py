@@ -1224,12 +1224,12 @@ async def show_start_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         "📝 Нова заявка",
         "⚡ Швидка заявка",
         "📋 Мої заявки",
-        "🔎 Пошук/редагування заявки",
-        "📋 Копіювати заявку",
         "🆔 Мій ID",
     ]
 
     if _is_admin_user(update.effective_user):
+        menu_items.append("🔎 Пошук/редагування заявки")
+        menu_items.append("📋 Копіювати заявку")
         menu_items.append("📊 Зведення за датою")
     
     if templates:
