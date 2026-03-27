@@ -1798,8 +1798,8 @@ async def ask_question(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
         progress = f"({index + 1}/{len(QUESTIONS)})"
         prompt_with_progress = (
             f"{question['prompt']} {progress}\n\n"
-            "💡 Оберіть зі списку або введіть вручну.\n"
-            "📎 Щоб обрати з телефонної книги — натисніть скріпку → Контакт"
+            "💡 Оберіть зі списку або введіть вручну\n"
+            "(приклад: Іванов Іван 0501234567)"
         )
         bot_message = await update.message.reply_text(prompt_with_progress, reply_markup=keyboard)
         context.user_data["last_question_message_id"] = bot_message.message_id
