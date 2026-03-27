@@ -1788,7 +1788,6 @@ async def ask_question(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
             for value in unique_contacts[:5]:
                 buttons.append([KeyboardButton(text=value)])
         
-        buttons.append([KeyboardButton(text="📱 Поділитися контактом", request_contact=True)])
         buttons.append([KeyboardButton(text="✍️ Ввести новий контакт")])
         if question.get("options") and "Пропустити" in question["options"]:
             buttons.append([KeyboardButton(text="Пропустити")])
@@ -1799,9 +1798,8 @@ async def ask_question(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
         progress = f"({index + 1}/{len(QUESTIONS)})"
         prompt_with_progress = (
             f"{question['prompt']} {progress}\n\n"
-            "💡 Оберіть зі списку, введіть вручну або:\n"
-            "📱 Натисніть «Поділитися контактом» щоб обрати зі своїх контактів Telegram,\n"
-            "або надішліть контакт через 📎 → Контакт"
+            "💡 Оберіть зі списку або введіть вручну.\n"
+            "📎 Щоб обрати з телефонної книги — натисніть скріпку → Контакт"
         )
         bot_message = await update.message.reply_text(prompt_with_progress, reply_markup=keyboard)
         context.user_data["last_question_message_id"] = bot_message.message_id
