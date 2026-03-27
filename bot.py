@@ -1788,6 +1788,7 @@ async def ask_question(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
             for value in unique_contacts[:5]:
                 buttons.append([KeyboardButton(text=value)])
         
+        buttons.append([KeyboardButton(text="📱 Поділитися контактом", request_contact=True)])
         buttons.append([KeyboardButton(text="✍️ Ввести новий контакт")])
         if question.get("options") and "Пропустити" in question["options"]:
             buttons.append([KeyboardButton(text="Пропустити")])
@@ -1796,7 +1797,12 @@ async def ask_question(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
         
         keyboard = ReplyKeyboardMarkup(buttons, resize_keyboard=True, one_time_keyboard=True)
         progress = f"({index + 1}/{len(QUESTIONS)})"
-        prompt_with_progress = f"{question['prompt']} {progress}\n\n💡 Оберіть зі списку або введіть новий:"
+        prompt_with_progress = (
+            f"{question['prompt']} {progress}\n\n"
+            "💡 Оберіть зі списку, введіть вручну або:\n"
+            "📱 Натисніть «Поділитися контактом» щоб обрати зі своїх контактів Telegram,\n"
+            "або надішліть контакт через 📎 → Контакт"
+        )
         bot_message = await update.message.reply_text(prompt_with_progress, reply_markup=keyboard)
         context.user_data["last_question_message_id"] = bot_message.message_id
         return QUESTION
@@ -1814,6 +1820,49 @@ async def ask_question(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     bot_message = await update.message.reply_text(prompt_with_progress, reply_markup=keyboard)
     context.user_data["last_question_message_id"] = bot_message.message_id
     return QUESTION
+
+
+async def handle_contact_share(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Обробка контакту, надісланого через 📱 Поділитися або 📎 → Контакт."""
+    contact = update.message.contact
+    if not contact:
+        return QUESTION
+
+    # Формуємо рядок контакту
+    parts = []
+    if contact.first_name:
+        parts.append(contact.first_name)
+    if contact.last_name:
+        parts.append(contact.last_name)
+    if contact.phone_number:
+        phone = contact.phone_number
+        if not phone.startswith("+"):
+            phone = "+" + phone
+        parts.append(phone)
+    contact_text = " ".join(parts)
+
+    # Визначаємо поточне контактне поле
+    awaiting_key = context.user_data.get("new_contact_key")
+    if awaiting_key:
+        # Прийшов контакт поки чекали ручного вводу (CUSTOM_INPUT)
+        field_key = awaiting_key
+        context.user_data.pop("awaiting_new_contact", None)
+        context.user_data.pop("new_contact_key", None)
+        # Переходимо до наступного питання
+        context.user_data["question_index"] = context.user_data.get("question_index", 0) + 1
+    else:
+        index = context.user_data.get("question_index", 0)
+        question = _get_question(index)
+        field_key = question["key"]
+        context.user_data["question_index"] = index + 1
+
+    context.user_data[field_key] = contact_text
+
+    await update.message.reply_text(
+        f"✅ Контакт збережено: {contact_text}\n\nЯкщо потрібно змінити — відредагуйте поле на екрані підтвердження.",
+        reply_markup=ReplyKeyboardRemove(),
+    )
+    return await ask_question(update, context)
 
 
 async def handle_answer(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -4732,10 +4781,12 @@ def build_app() -> Application:
                 CommandHandler("cancel", cancel),
             ],
             QUESTION: [
+                MessageHandler(filters.CONTACT, handle_contact_share),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_answer),
                 CommandHandler("cancel", cancel),
             ],
             CUSTOM_INPUT: [
+                MessageHandler(filters.CONTACT, handle_contact_share),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_custom_input),
                 CommandHandler("cancel", cancel),
             ],
