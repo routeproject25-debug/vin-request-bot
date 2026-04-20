@@ -1244,10 +1244,37 @@ def _ensure_creation_metadata_from_request_row(data: Dict[str, Any], request_row
     created_at = request_row.get("created_at")
     if not created_at:
         return
+    kyiv_tz = pytz.timezone('Europe/Kyiv')
+    if getattr(created_at, "tzinfo", None) is None:
+        # PostgreSQL часто повертає naive timestamp у UTC.
+        created_at = pytz.UTC.localize(created_at)
+    created_at_kyiv = created_at.astimezone(kyiv_tz)
     if not str(data.get("created_date") or "").strip():
-        data["created_date"] = created_at.strftime("%d.%m.%Y")
+        data["created_date"] = created_at_kyiv.strftime("%d.%m.%Y")
     if not str(data.get("created_time") or "").strip():
-        data["created_time"] = created_at.strftime("%H:%M")
+        data["created_time"] = created_at_kyiv.strftime("%H:%M")
+
+
+async def _ensure_creator_mention_from_request_owner(
+    data: Dict[str, Any],
+    request_row: Optional[Dict[str, Any]],
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    """Спробувати відновити created_by_mention по owner user_id для старих заявок."""
+    if str(data.get("created_by_mention") or "").strip():
+        return
+    if not request_row:
+        return
+
+    owner_user_id = request_row.get("user_id")
+    if owner_user_id is None:
+        return
+
+    try:
+        owner_chat = await context.bot.get_chat(int(owner_user_id))
+        data["created_by_mention"] = _build_user_mention(owner_chat)
+    except Exception as e:
+        logging.warning(f"Failed to resolve request owner mention for user_id={owner_user_id}: {e}")
 
 
 def _build_edit_footer(editor_user: Any) -> str:
@@ -1470,6 +1497,7 @@ async def handle_start_menu_choice(update: Update, context: ContextTypes.DEFAULT
                 request_data = request.get("request_data", {})
                 context.user_data.update(request_data)
                 _ensure_creation_metadata_from_request_row(context.user_data, request)
+                await _ensure_creator_mention_from_request_owner(context.user_data, request, context)
                 context.user_data["request_id"] = request_id
                 context.user_data["editing_mode"] = True
                 context.user_data["is_request_edit"] = True
@@ -3669,6 +3697,7 @@ async def confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
                 saved_request = db.get_request(request_id)
                 if saved_request:
                     _ensure_creation_metadata_from_request_row(context.user_data, saved_request)
+                    await _ensure_creator_mention_from_request_owner(context.user_data, saved_request, context)
                     message_id = saved_request.get("message_id")
                     thread_id = saved_request.get("thread_id") or thread_id
                     notification = _build_request_notification(
@@ -4418,6 +4447,7 @@ async def handle_request_action_callback(update: Update, context: ContextTypes.D
         context.user_data.clear()
         context.user_data.update(request_data)
         _ensure_creation_metadata_from_request_row(context.user_data, request)
+        await _ensure_creator_mention_from_request_owner(context.user_data, request, context)
         context.user_data["request_id"] = parent_request_id
         context.user_data["last_request_id"] = parent_request_id
         context.user_data["editing_mode"] = True
@@ -4482,6 +4512,7 @@ async def handle_request_action_callback(update: Update, context: ContextTypes.D
 
             chat_id = os.getenv("TARGET_CHAT_ID")
             _ensure_creation_metadata_from_request_row(request_data, request)
+            await _ensure_creator_mention_from_request_owner(request_data, request, context)
             notification = _build_request_notification(
                 parent_request_id,
                 request_data,
@@ -4687,6 +4718,7 @@ async def _open_request_for_edit_by_id(update: Update, context: ContextTypes.DEF
     context.user_data.clear()
     context.user_data.update(request_data)
     _ensure_creation_metadata_from_request_row(context.user_data, request)
+    await _ensure_creator_mention_from_request_owner(context.user_data, request, context)
     context.user_data["request_id"] = parent_request_id
     context.user_data["last_request_id"] = parent_request_id
     context.user_data["editing_mode"] = True
