@@ -291,8 +291,8 @@ def export_to_sheets(data: Dict[str, Any]) -> Tuple[bool, str]:
         # Отримати поточну дату/час у Київському часі
         kyiv_tz = pytz.timezone('Europe/Kyiv')
         now = datetime.now(kyiv_tz)
-        date_str = now.strftime("%d.%m.%Y")
-        time_str = now.strftime("%H:%M")
+        date_str = str(data.get("created_date") or "").strip() or now.strftime("%d.%m.%Y")
+        time_str = str(data.get("created_time") or "").strip() or now.strftime("%H:%M")
         
         # Розпарсити контакти
         load_contact = data.get("load_contact", "—")

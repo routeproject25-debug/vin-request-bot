@@ -1164,11 +1164,12 @@ def _format_application(data: Dict[str, Any]) -> str:
         value = data.get(key)
         return value if value else "—"
     
-    # Використовуємо часовий пояс Київа (UTC+2)
+    # Дата/час створення заявки мають залишатися незмінними під час редагування.
+    # Якщо метадані ще відсутні (старі записи), використовуємо поточний час Києва.
     kyiv_tz = pytz.timezone('Europe/Kyiv')
     now = datetime.now(kyiv_tz)
-    date_str = now.strftime("%d.%m.%Y")
-    time_str = now.strftime("%H:%M")
+    date_str = str(data.get("created_date") or "").strip() or now.strftime("%d.%m.%Y")
+    time_str = str(data.get("created_time") or "").strip() or now.strftime("%H:%M")
     
     # Форматувати size_type з big_bag_weight для Біг-бегу
     size_type = val('size_type')
@@ -1209,6 +1210,69 @@ def _format_application(data: Dict[str, Any]) -> str:
         f"Спосіб розвантаження: {val('unload_method')}\n"
         f"Контакт на розвантаженні: {val('unload_contact')}"
     )
+
+
+def _build_user_mention(user: Any, fallback: str = "Користувач") -> str:
+    """Побудувати згадку користувача у форматі @username або ПІБ."""
+    if not user:
+        return fallback
+    username = getattr(user, "username", None)
+    if username:
+        return f"@{username}"
+    full_name = getattr(user, "full_name", None)
+    if full_name:
+        return full_name
+    return fallback
+
+
+def _initialize_creation_metadata(data: Dict[str, Any], user: Any, force: bool = False) -> None:
+    """Заповнити метадані створення заявки (хто/коли)."""
+    kyiv_tz = pytz.timezone('Europe/Kyiv')
+    now = datetime.now(kyiv_tz)
+    if force or not str(data.get("created_date") or "").strip():
+        data["created_date"] = now.strftime("%d.%m.%Y")
+    if force or not str(data.get("created_time") or "").strip():
+        data["created_time"] = now.strftime("%H:%M")
+    if force or not str(data.get("created_by_mention") or "").strip():
+        data["created_by_mention"] = _build_user_mention(user)
+
+
+def _ensure_creation_metadata_from_request_row(data: Dict[str, Any], request_row: Optional[Dict[str, Any]]) -> None:
+    """Дозаповнити created_date/created_time з БД для старих заявок без цих полів."""
+    if not request_row:
+        return
+    created_at = request_row.get("created_at")
+    if not created_at:
+        return
+    if not str(data.get("created_date") or "").strip():
+        data["created_date"] = created_at.strftime("%d.%m.%Y")
+    if not str(data.get("created_time") or "").strip():
+        data["created_time"] = created_at.strftime("%H:%M")
+
+
+def _build_edit_footer(editor_user: Any) -> str:
+    """Побудувати короткий блок про останнє редагування заявки."""
+    kyiv_tz = pytz.timezone('Europe/Kyiv')
+    now = datetime.now(kyiv_tz)
+    edited_by = _build_user_mention(editor_user)
+    return (
+        f"Вніс зміни: {edited_by}\n"
+        f"Дата і час: {now.strftime('%d.%m.%Y')} - {now.strftime('%H:%M')}"
+    )
+
+
+def _build_request_notification(
+    request_id: str,
+    request_data: Dict[str, Any],
+    fallback_user: Any,
+    edit_footer: Optional[str] = None,
+) -> str:
+    """Зібрати повний текст повідомлення заявки для групи."""
+    creator_mention = str(request_data.get("created_by_mention") or "").strip() or _build_user_mention(fallback_user)
+    application_text = _format_application(request_data)
+    if edit_footer:
+        application_text = f"{application_text}\n\n-------\n{edit_footer}"
+    return f"📋 {creator_mention} створив нову заявку:\n🆔 ID заявки: {request_id}\n\n{application_text}"
 
 
 async def show_start_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -1405,6 +1469,7 @@ async def handle_start_menu_choice(update: Update, context: ContextTypes.DEFAULT
                 # Відновити дані заявки в context
                 request_data = request.get("request_data", {})
                 context.user_data.update(request_data)
+                _ensure_creation_metadata_from_request_row(context.user_data, request)
                 context.user_data["request_id"] = request_id
                 context.user_data["editing_mode"] = True
                 context.user_data["is_request_edit"] = True
@@ -2578,6 +2643,9 @@ async def handle_summary_action_callback(update: Update, context: ContextTypes.D
         # Завантажуємо дані копії в context як нову заявку в режимі редагування
         context.user_data.clear()
         context.user_data.update(source_data)
+        context.user_data.pop("created_date", None)
+        context.user_data.pop("created_time", None)
+        context.user_data.pop("created_by_mention", None)
         context.user_data["request_id"] = new_request_id
         context.user_data["last_request_id"] = new_request_id
         context.user_data["editing_mode"] = True
@@ -3432,13 +3500,13 @@ async def confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
         request_id = context.user_data.get("request_id") or uuid.uuid4().hex[:8].upper()
         context.user_data["request_id"] = request_id
-        application_text = _format_application(context.user_data)
         thread_id = context.user_data.get("thread_id")
         
-        # Додаємо згадку користувача
+        # Для нової заявки фіксуємо первинні дані створення.
         user = update.effective_user
-        user_mention = f"@{user.username}" if user.username else user.full_name
-        notification = f"📋 {user_mention} створив нову заявку:\n🆔 ID заявки: {request_id}\n\n{application_text}"
+        force_meta_refresh = bool(context.user_data.get("is_copy"))
+        _initialize_creation_metadata(context.user_data, user, force=force_meta_refresh)
+        notification = _build_request_notification(request_id, context.user_data, user)
         
         # Надіслати в груповий чат та зберегти message_id
         logging.info(f"Quick request: sending {request_id} to chat {chat_id}, thread_id={thread_id}")
@@ -3581,14 +3649,12 @@ async def confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
         request_id = context.user_data.get("request_id") or uuid.uuid4().hex[:8].upper()
         context.user_data["request_id"] = request_id
-        application_text = _format_application(context.user_data)
         user = update.effective_user
-        user_mention = f"@{user.username}" if user.username else user.full_name
-        notification = f"📋 {user_mention} створив нову заявку:\n🆔 ID заявки: {request_id}\n\n{application_text}"
         
         # Перевірити чи це редагування існуючої заявки
         is_editing = context.user_data.get("is_request_edit", False)
         message_id = None
+        notification = ""
         
         if is_editing:
             thread_id = context.user_data.get("thread_id")
@@ -3596,13 +3662,21 @@ async def confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
             changes_text = _get_changes_text(original_data, context.user_data) if original_data else ""
             chat_updated = False
             update_error = None
+            edit_footer = _build_edit_footer(user)
 
             # Отримати message_id з БД
             try:
                 saved_request = db.get_request(request_id)
                 if saved_request:
+                    _ensure_creation_metadata_from_request_row(context.user_data, saved_request)
                     message_id = saved_request.get("message_id")
                     thread_id = saved_request.get("thread_id") or thread_id
+                    notification = _build_request_notification(
+                        request_id,
+                        context.user_data,
+                        None,
+                        edit_footer=edit_footer,
+                    )
                     
                     if message_id:
                         # Редагувати існуюче повідомлення в групі
@@ -3646,6 +3720,9 @@ async def confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         else:
             # Нова заявка - надіслати нове повідомлення
             thread_id = context.user_data.get("thread_id")
+            force_meta_refresh = bool(context.user_data.get("is_copy"))
+            _initialize_creation_metadata(context.user_data, user, force=force_meta_refresh)
+            notification = _build_request_notification(request_id, context.user_data, user)
             department = context.user_data.get("department")
             logging.info(f"Sending new request {request_id} to chat {chat_id}, department={department}, thread_id={thread_id}")
             logging.debug(f"Request notification text (first 200 chars): {notification[:200]}")
@@ -4137,8 +4214,13 @@ async def _persist_child_edit_and_sync(update: Update, context: ContextTypes.DEF
 
     chat_id = os.getenv("TARGET_CHAT_ID")
     user = update.effective_user
-    user_mention = f"@{user.username}" if user and user.username else (user.full_name if user else "Користувач")
-    notification = f"📋 {user_mention} створив нову заявку:\n🆔 ID заявки: {parent_request_id}\n\n{_format_application(request_data)}"
+    _ensure_creation_metadata_from_request_row(request_data, request)
+    notification = _build_request_notification(
+        parent_request_id,
+        request_data,
+        None,
+        edit_footer=_build_edit_footer(user),
+    )
 
     try:
         if request.get("message_id") and chat_id:
@@ -4335,6 +4417,7 @@ async def handle_request_action_callback(update: Update, context: ContextTypes.D
 
         context.user_data.clear()
         context.user_data.update(request_data)
+        _ensure_creation_metadata_from_request_row(context.user_data, request)
         context.user_data["request_id"] = parent_request_id
         context.user_data["last_request_id"] = parent_request_id
         context.user_data["editing_mode"] = True
@@ -4398,8 +4481,13 @@ async def handle_request_action_callback(update: Update, context: ContextTypes.D
             db.update_request_data(parent_request_id, request_data)
 
             chat_id = os.getenv("TARGET_CHAT_ID")
-            user_mention = f"@{user.username}" if user and user.username else (user.full_name if user else "Користувач")
-            notification = f"📋 {user_mention} створив нову заявку:\n🆔 ID заявки: {parent_request_id}\n\n{_format_application(request_data)}"
+            _ensure_creation_metadata_from_request_row(request_data, request)
+            notification = _build_request_notification(
+                parent_request_id,
+                request_data,
+                None,
+                edit_footer=_build_edit_footer(user),
+            )
             try:
                 if request.get("message_id") and chat_id:
                     await context.bot.edit_message_text(
@@ -4470,6 +4558,9 @@ async def handle_request_action_callback(update: Update, context: ContextTypes.D
         # Очистити context і завантажити дані
         context.user_data.clear()
         context.user_data.update(request_data)
+        context.user_data.pop("created_date", None)
+        context.user_data.pop("created_time", None)
+        context.user_data.pop("created_by_mention", None)
         context.user_data["request_id"] = new_request_id
         context.user_data["last_request_id"] = new_request_id
         # Явно встановлюємо що це НЕ редагування - це нова заявка (копія)
@@ -4595,6 +4686,7 @@ async def _open_request_for_edit_by_id(update: Update, context: ContextTypes.DEF
 
     context.user_data.clear()
     context.user_data.update(request_data)
+    _ensure_creation_metadata_from_request_row(context.user_data, request)
     context.user_data["request_id"] = parent_request_id
     context.user_data["last_request_id"] = parent_request_id
     context.user_data["editing_mode"] = True
@@ -4707,6 +4799,9 @@ async def handle_copy_request_confirm(update: Update, context: ContextTypes.DEFA
     # Завантажуємо скопійовані дані як нову заявку в режимі редагування
     context.user_data.clear()
     context.user_data.update(source_data)
+    context.user_data.pop("created_date", None)
+    context.user_data.pop("created_time", None)
+    context.user_data.pop("created_by_mention", None)
     context.user_data["request_id"] = new_request_id
     context.user_data["last_request_id"] = new_request_id
     context.user_data["editing_mode"] = True
