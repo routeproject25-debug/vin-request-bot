@@ -1,19 +1,22 @@
 import os
 import re
+import asyncio
 import logging
-import calendar
-import uuid
 import io
 import csv
 import unicodedata
-import aiohttp
-import pytz
 from typing import Dict, Any, List, Optional, Tuple
-from datetime import datetime, date, timedelta
-from telegram_bot_calendar import DetailedTelegramCalendar
+from datetime import datetime, date
+from urllib.parse import urlencode
 import db
 import sheets
-from db import save_contacts, get_user_contacts
+import services
+import formatting
+import publishing
+import reminders
+import novaposhta
+import webapp_server
+from db import get_user_contacts
 
 from telegram import (
     Update,
@@ -23,6 +26,7 @@ from telegram import (
     KeyboardButton,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
+    WebAppInfo,
 )
 from telegram.ext import (
     Application,
@@ -66,39 +70,19 @@ logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 START, DEPARTMENT, QUESTION, CUSTOM_INPUT, CROP_TYPE, CONFIRM, EDIT, DATE_TYPE, DATE_CALENDAR, DATE_PERIOD_END, LOAD_TEMPLATE, TEMPLATE_SELECT, SAVE_TEMPLATE_NAME, SAVE_TEMPLATE_CONFIRM, DELETE_TEMPLATE_CONFIRM, CITY_SEARCH_LOAD, CITY_SELECT_LOAD, CITY_SEARCH_UNLOAD, CITY_SELECT_UNLOAD, UNLOAD_DISTRIBUTION, CHILD_EDIT_MENU, CHILD_EDIT_CITY, CHILD_EDIT_VOLUME, FIND_REQUEST_EDIT, SUMMARY_DATE_CALENDAR, COPY_REQUEST_ID = range(26)
 
-THREAD_IDS = {
-    "Тваринництво": 2,
-    "Виробництво": 4,
-}
-
-CROP_TYPES = ["Кукурудза", "Пшениця", "Соя", "Ріпак", "Соняшник"]
-
-LIQUID_BULK_CARGO = {"КАС", "РКД", "АМ вода"}
+THREAD_IDS = services.THREAD_IDS
+CROP_TYPES = services.CROP_TYPES
+LIQUID_BULK_CARGO = services.LIQUID_BULK_CARGO
 
 CAL_PREFIX = "CAL"
 SUMMARY_CAL_PREFIX = "SUMCAL"
-MONTH_NAMES_UK = [
-    "Січень",
-    "Лютий",
-    "Березень",
-    "Квітень",
-    "Травень",
-    "Червень",
-    "Липень",
-    "Серпень",
-    "Вересень",
-    "Жовтень",
-    "Листопад",
-    "Грудень",
-]
-WEEKDAYS_UK = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Нд"]
 
 QUESTIONS: List[Dict[str, Any]] = [
     {
         "key": "vehicle_type",
         "label": "Тип авто",
         "prompt": "Тип авто:",
-        "options": ["ТРАЛ", "Зерновоз", "Самоскид", "Цистерна", "Тент", "Інше"],
+        "options": services.VEHICLE_TYPES,
     },
     {
         "key": "initiator",
@@ -110,19 +94,19 @@ QUESTIONS: List[Dict[str, Any]] = [
         "key": "company",
         "label": "Підприємство",
         "prompt": "Підприємство:",
-        "options": ["Зернопродукт", "Агрокряж", "Інше"],
+        "options": services.COMPANIES,
     },
     {
         "key": "cargo_type",
         "label": "Вид вантажу",
         "prompt": "Вид вантажу:",
-        "options": ["Зерно", "Насіння", "АМ вода", "КАС", "РКД", "Інше"],
+        "options": services.CARGO_TYPES,
     },
     {
         "key": "size_type",
         "label": "Габарит / негабарит",
         "prompt": "Габарит / негабарит:",
-        "options": ["Габарит", "Негабарит", "Насип", "Рідкі", "Біг-бег"],
+        "options": services.SIZE_TYPES,
     },
     {
         "key": "big_bag_weight",
@@ -203,6 +187,43 @@ QUESTIONS: List[Dict[str, Any]] = [
 ]
 
 
+# Спільна логіка винесена в окремі модулі (services / formatting / novaposhta).
+_is_admin_user = services.is_admin_user
+search_cities_novaposhta = novaposhta.search_cities
+_format_volume_with_unit = formatting.format_volume_with_unit
+_format_volume_for_size = formatting.format_volume_for_size
+_to_float = services.to_float
+_format_number = services.format_number
+_split_location_values = services.split_location_values
+_resolve_parent_request_id = services.resolve_parent_request_id
+_parse_child_request_id = services.parse_child_request_id
+_build_child_items_from_data = services.build_child_items
+_rebuild_distribution_from_items = services.rebuild_distribution
+_parse_ua_date = services.parse_ua_date
+_extract_delivery_range = services.extract_delivery_range
+_build_month_calendar = formatting.build_month_calendar
+_parse_calendar_callback = formatting.parse_calendar_callback
+_short_city_name = formatting.short_city_name
+_build_compact_route = formatting.build_compact_route
+_format_application = formatting.format_application
+_build_user_mention = formatting.build_user_mention
+_initialize_creation_metadata = formatting.initialize_creation_metadata
+_ensure_creation_metadata_from_request_row = formatting.ensure_creation_metadata_from_request_row
+_build_edit_footer = formatting.build_edit_footer
+_build_request_notification = formatting.build_request_notification
+_get_changes_text = formatting.get_changes_text
+
+DATE_QUESTION_INDEX = next(i for i, q in enumerate(QUESTIONS) if q["key"] == "date_period")
+
+
+async def _ensure_creator_mention_from_request_owner(
+    data: Dict[str, Any],
+    request_row: Optional[Dict[str, Any]],
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    await formatting.ensure_creator_mention_from_request_owner(data, request_row, context.bot)
+
+
 def _chat_type(update: Update) -> Optional[str]:
     chat = getattr(update, "effective_chat", None)
     if chat and getattr(chat, "type", None):
@@ -215,48 +236,6 @@ def _chat_type(update: Update) -> Optional[str]:
 
 def _is_private_chat(update: Update) -> bool:
     return _chat_type(update) == "private"
-
-
-def _is_admin_user(user) -> bool:
-    """Check if current user is configured as bot admin."""
-    if not user:
-        return False
-
-    admin_ids_raw = (os.getenv("ADMIN_USER_IDS") or "").strip()
-    admin_ids: set = set()
-    if admin_ids_raw:
-        for token in re.split(r"[,;\s]+", admin_ids_raw):
-            token = token.strip()
-            if not token:
-                continue
-            try:
-                admin_ids.add(int(token))
-            except ValueError:
-                continue
-
-    # backward compatibility: existing single ADMIN_USER_ID
-    legacy_admin_id = (os.getenv("ADMIN_USER_ID") or "").strip()
-    if legacy_admin_id:
-        try:
-            admin_ids.add(int(legacy_admin_id))
-        except ValueError:
-            pass
-
-    if admin_ids and int(getattr(user, "id", 0)) in admin_ids:
-        return True
-
-    admin_usernames_raw = (os.getenv("ADMIN_USERNAMES") or "").strip()
-    if admin_usernames_raw:
-        admin_usernames = {
-            item.strip().lstrip("@").lower()
-            for item in re.split(r"[,;\s]+", admin_usernames_raw)
-            if item.strip()
-        }
-        username = (getattr(user, "username", "") or "").strip().lstrip("@").lower()
-        if username and username in admin_usernames:
-            return True
-
-    return False
 
 
 async def _send_private_only_notice(update: Update) -> None:
@@ -288,71 +267,6 @@ def _get_volume_prompt(size_type: str) -> str:
         return "Вага в тонах (тільки число):"
 
 
-def _format_volume_with_unit(size_type: str, volume: str) -> str:
-    """Форматувати відповідь вага/обсяг з правильною одиницею"""
-    if not volume:
-        return volume
-    if size_type == "Біг-бег":
-        return f"{volume} шт"
-    elif size_type in ["Насип", "Рідкі"]:
-        return f"{volume} т"
-    else:  # Габарит, Негабарит
-        return f"{volume} т"
-
-
-async def search_cities_novaposhta(query: str) -> List[Dict[str, str]]:
-    """Пошук населених пунктів через API Нової Пошти"""
-    api_key = os.getenv("NOVAPOSHTA_API_KEY")
-    if not api_key:
-        logging.error("NOVAPOSHTA_API_KEY не встановлено")
-        return []
-    
-    url = "https://api.novaposhta.ua/v2.0/json/"
-    payload = {
-        "apiKey": api_key,
-        "modelName": "Address",
-        "calledMethod": "searchSettlements",
-        "methodProperties": {
-            "CityName": query,
-            "Limit": "10"
-        }
-    }
-    
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.post(url, json=payload) as response:
-                data = await response.json()
-                
-                if not data.get("success"):
-                    return []
-                
-                addresses = data.get("data", [{}])[0].get("Addresses", [])
-                results = []
-                
-                for addr in addresses:
-                    # Формуємо назву: "Місто (Район, Область)"
-                    present = addr.get("Present", "")
-                    area = addr.get("Area", "")
-                    region = addr.get("Region", "")
-                    
-                    if area and region:
-                        display = f"{present} ({area}, {region})"
-                    elif region:
-                        display = f"{present} ({region})"
-                    else:
-                        display = present
-                    
-                    results.append({
-                        "display": display,
-                        "value": present
-                    })
-                
-                return results[:10]
-    except Exception as e:
-        logging.error(f"Error searching cities: {e}")
-        return []
-
-
 def _get_question(index: int) -> Dict[str, Any]:
     return QUESTIONS[index]
 
@@ -364,15 +278,6 @@ def _normalize_cargo_type(value: Optional[str]) -> Optional[str]:
     if text.lower().startswith("культура"):
         return "Культура"
     return text
-
-
-def _split_location_values(value: Optional[str]) -> List[str]:
-    if not value:
-        return []
-    text = str(value).strip()
-    if not text or text == "—":
-        return []
-    return [part.strip() for part in text.split(";") if part.strip()]
 
 
 def _append_location_value(existing: Optional[str], new_value: str) -> str:
@@ -402,24 +307,6 @@ def _build_location_actions_keyboard(include_skip: bool = False) -> ReplyKeyboar
     return ReplyKeyboardMarkup(buttons, resize_keyboard=True, one_time_keyboard=True)
 
 
-def _to_float(value: Any) -> Optional[float]:
-    try:
-        return float(str(value).replace(" ", "").replace(",", "."))
-    except Exception:
-        return None
-
-
-def _format_number(value: float) -> str:
-    if abs(value - round(value)) < 1e-9:
-        return str(int(round(value)))
-    return f"{value:.3f}".rstrip("0").rstrip(".")
-
-
-def _format_volume_for_size(size_type: str, value: float) -> str:
-    unit = "шт" if size_type == "Біг-бег" else "т"
-    return f"{_format_number(value)} {unit}"
-
-
 def _build_distribution_actions_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         [
@@ -430,67 +317,6 @@ def _build_distribution_actions_keyboard() -> ReplyKeyboardMarkup:
         resize_keyboard=True,
         one_time_keyboard=True,
     )
-
-
-def _resolve_parent_request_id(request_id: str) -> str:
-    rid = (request_id or "").strip().upper()
-    if not rid:
-        return rid
-    if "-" not in rid:
-        return rid
-    head, tail = rid.rsplit("-", 1)
-    return head if tail.isdigit() else rid
-
-
-def _parse_child_request_id(request_id: str) -> Optional[Tuple[str, int]]:
-    rid = (request_id or "").strip().upper()
-    if "-" not in rid:
-        return None
-    head, tail = rid.rsplit("-", 1)
-    if not tail.isdigit():
-        return None
-    return head, int(tail)
-
-
-def _build_child_items_from_data(data: Dict[str, Any]) -> List[Dict[str, Any]]:
-    unload_cities = _split_location_values(data.get("unload_city"))
-    distribution = data.get("unload_distribution") if isinstance(data.get("unload_distribution"), dict) else {}
-    ids_map = data.get("unload_distribution_ids") if isinstance(data.get("unload_distribution_ids"), dict) else {}
-    parent_id = (data.get("request_id") or "").strip().upper()
-    items: List[Dict[str, Any]] = []
-    for idx, city in enumerate(unload_cities, start=1):
-        amount = _to_float(distribution.get(city))
-        if amount is None:
-            amount = 0.0
-        child_id = str(ids_map.get(city) or "").strip().upper()
-        if not child_id:
-            child_id = f"{parent_id}-{idx:02d}" if parent_id else f"-{idx:02d}"
-        items.append({
-            "index": idx,
-            "city": city,
-            "amount": amount,
-            "child_id": child_id,
-        })
-    return items
-
-
-def _rebuild_distribution_from_items(items: List[Dict[str, Any]]) -> Tuple[str, Dict[str, float], Dict[str, str], float]:
-    unload_cities: List[str] = []
-    distribution: Dict[str, float] = {}
-    ids_map: Dict[str, str] = {}
-    total = 0.0
-    for item in items:
-        city = str(item.get("city", "")).strip()
-        if not city:
-            continue
-        amount = float(item.get("amount", 0.0) or 0.0)
-        child_id = str(item.get("child_id", "")).strip().upper()
-        unload_cities.append(city)
-        distribution[city] = amount
-        if child_id:
-            ids_map[city] = child_id
-        total += amount
-    return "; ".join(unload_cities) if unload_cities else "—", distribution, ids_map, total
 
 
 def _build_request_display_entries(requests: list) -> list:
@@ -583,81 +409,7 @@ def _build_reply_keyboard(options: Optional[List[str]], show_back: bool = False)
     return ReplyKeyboardMarkup(buttons, resize_keyboard=True, one_time_keyboard=True)
 
 
-def _build_month_calendar(year: int, month: int, prefix: str = CAL_PREFIX) -> InlineKeyboardMarkup:
-    rows: List[List[InlineKeyboardButton]] = []
-    header_text = f"{MONTH_NAMES_UK[month - 1]} {year}"
-    rows.append([InlineKeyboardButton(text=header_text, callback_data=f"{prefix}:X")])
-    rows.append([InlineKeyboardButton(text=day, callback_data=f"{prefix}:X") for day in WEEKDAYS_UK])
-
-    cal = calendar.Calendar(firstweekday=0)
-    for week in cal.monthdayscalendar(year, month):
-        row: List[InlineKeyboardButton] = []
-        for day in week:
-            if day == 0:
-                row.append(InlineKeyboardButton(text=" ", callback_data=f"{prefix}:X"))
-            else:
-                row.append(
-                    InlineKeyboardButton(
-                        text=str(day),
-                        callback_data=f"{prefix}:D:{year:04d}-{month:02d}-{day:02d}",
-                    )
-                )
-        rows.append(row)
-
-    prev_year, prev_month = (year - 1, 12) if month == 1 else (year, month - 1)
-    next_year, next_month = (year + 1, 1) if month == 12 else (year, month + 1)
-    rows.append(
-        [
-            InlineKeyboardButton(text="«", callback_data=f"{prefix}:N:{prev_year:04d}-{prev_month:02d}"),
-            InlineKeyboardButton(text="Сьогодні", callback_data=f"{prefix}:T"),
-            InlineKeyboardButton(text="»", callback_data=f"{prefix}:N:{next_year:04d}-{next_month:02d}"),
-        ]
-    )
-    return InlineKeyboardMarkup(rows)
-
-
-def _parse_calendar_callback(data: str, prefix: str = CAL_PREFIX) -> Tuple[str, Optional[str]]:
-    if not data or not data.startswith(f"{prefix}:"):
-        return "IGNORE", None
-    parts = data.split(":", 2)
-    if len(parts) < 2:
-        return "IGNORE", None
-    action = parts[1]
-    if action in {"X"}:
-        return "IGNORE", None
-    if action == "T":
-        today = date.today()
-        return "NAV", f"{today.year:04d}-{today.month:02d}"
-    if len(parts) < 3:
-        return "IGNORE", None
-    payload = parts[2]
-    if action == "N":
-        return "NAV", payload
-    if action == "D":
-        return "DATE", payload
-    return "IGNORE", None
-
-
 SUMMARY_BUTTONS_PAGE_SIZE = 3
-
-
-def _short_city_name(value: Any) -> str:
-    text = str(value or "").strip()
-    if not text or text == "—":
-        return "—"
-    first = text.split(";")[0].strip()
-    first = first.split(",")[0].strip()
-    first = re.sub(r"^(м\.?|с\.?|смт\.?|селище|село)\s+", "", first, flags=re.IGNORECASE)
-    return first or "—"
-
-
-def _build_compact_route(data: Dict[str, Any]) -> str:
-    load_city = _short_city_name(data.get("load_city"))
-    unload_cities = _split_location_values(data.get("unload_city"))
-    unload_main = _short_city_name(unload_cities[0] if unload_cities else data.get("unload_city"))
-    if len(unload_cities) > 1:
-        unload_main = f"{unload_main}+{len(unload_cities) - 1}"
-    return f"{load_city}→{unload_main}"
 
 
 def _get_summary_filters(context: ContextTypes.DEFAULT_TYPE) -> Dict[str, Any]:
@@ -670,39 +422,6 @@ def _get_summary_filters(context: ContextTypes.DEFAULT_TYPE) -> Dict[str, Any]:
     filters.setdefault("date_basis", "CREATED")
     filters.setdefault("cargo_type", "ALL")
     return filters
-
-
-def _parse_ua_date(text: Any) -> Optional[date]:
-    raw = str(text or "").strip()
-    if not raw:
-        return None
-    for fmt in ("%d.%m.%Y", "%d.%m.%y"):
-        try:
-            return datetime.strptime(raw, fmt).date()
-        except ValueError:
-            continue
-    return None
-
-
-def _extract_delivery_range(request_data: Dict[str, Any]) -> Optional[Tuple[date, date]]:
-    period_raw = str((request_data or {}).get("date_period") or "").strip()
-    if not period_raw:
-        return None
-
-    if " - " in period_raw:
-        left, right = period_raw.split(" - ", 1)
-        start_dt = _parse_ua_date(left)
-        end_dt = _parse_ua_date(right)
-        if not start_dt or not end_dt:
-            return None
-        if end_dt < start_dt:
-            start_dt, end_dt = end_dt, start_dt
-        return start_dt, end_dt
-
-    single_dt = _parse_ua_date(period_raw)
-    if not single_dt:
-        return None
-    return single_dt, single_dt
 
 
 def _delivery_daily_volume(req: Dict[str, Any], target_day: date) -> Optional[Tuple[float, int]]:
@@ -775,7 +494,7 @@ def _truncate_text(value: Any, max_len: int) -> str:
 def _format_summary_entry_compact_line(req: Dict[str, Any], index: int) -> str:
     rid = (req.get("request_id") or "—").strip().upper()
     status = (req.get("status") or "АКТИВНА").strip().upper()
-    status_short = "🟢" if status != "ВИДАЛЕНО" else "🔴"
+    status_short = services.STATUS_EMOJI.get(services.normalize_status(status), "🟢")
 
     data = req.get("request_data") or {}
     if not isinstance(data, dict):
@@ -993,6 +712,7 @@ async def _render_admin_daily_summary(update: Update, context: ContextTypes.DEFA
             department=None if department == "ALL" else department,
             active_only=active_only,
             limit=5000,
+            target_date=target_day,
         )
         entries_base = []
         for req in raw_entries:
@@ -1041,7 +761,7 @@ async def _render_admin_daily_summary(update: Update, context: ContextTypes.DEFA
     context.user_data["summary_entries"] = entries
 
     total = len(entries)
-    active_count = len([r for r in entries if (r.get("status") or "").strip().upper() != "ВИДАЛЕНО"])
+    active_count = len([r for r in entries if services.normalize_status(r.get("status")) == services.STATUS_ACTIVE])
     total_volume = 0.0
     for req in entries:
         data = req.get("request_data") or {}
@@ -1159,147 +879,69 @@ async def _render_admin_daily_summary(update: Update, context: ContextTypes.DEFA
     return START
 
 
-def _format_application(data: Dict[str, Any]) -> str:
-    def val(key: str) -> str:
-        value = data.get(key)
-        return value if value else "—"
-    
-    # Дата/час створення заявки мають залишатися незмінними під час редагування.
-    # Якщо метадані ще відсутні (старі записи), використовуємо поточний час Києва.
-    kyiv_tz = pytz.timezone('Europe/Kyiv')
-    now = datetime.now(kyiv_tz)
-    date_str = str(data.get("created_date") or "").strip() or now.strftime("%d.%m.%Y")
-    time_str = str(data.get("created_time") or "").strip() or now.strftime("%H:%M")
-    
-    # Форматувати size_type з big_bag_weight для Біг-бегу
-    size_type = val('size_type')
-    if size_type == "Біг-бег":
-        big_bag_weight = val('big_bag_weight')
-        if big_bag_weight != "—":
-            size_type = f"Біг-бег - {big_bag_weight} кг/шт"
-    
-    # Форматувати обсяг/вагу з правильною одиницею
-    volume_value = val('volume')
-    size_type_for_unit = data.get('size_type', '')
-    if volume_value != "—":
-        volume_value = _format_volume_with_unit(size_type_for_unit, volume_value)
-
-    return (
-            f"Дата: {date_str}\n"
-            f"Час: {time_str}\n\n"
-        "ЗАЯВКА НА ПЕРЕВЕЗЕННЯ\n\n"
-        f"Запит від: {val('department')}\n\n"
-        "Вимоги до авто:\n"
-        f"Тип авто: {val('vehicle_type')}\n\n"
-        "Ініціатор заявки:\n"
-        f"ПІБ: {val('initiator')}\n\n"
-        "Параметри перевезення:\n"
-        f"Підприємство: {val('company')}\n"
-        f"Вид вантажу: {val('cargo_type')}\n"
-        f"Габарит / негабарит: {size_type}\n"
-        f"Обсяг: {volume_value}\n"
-        f"Примітки: {val('notes')}\n\n"
-        "Маршрут:\n"
-        f"Дата / період перевезення: {val('date_period')}\n\n"
-        f"Населений пункт завантаження: {val('load_city')}\n"
-        f"Склад завантаження: {val('load_place')}\n"
-        f"Спосіб завантаження: {val('load_method')}\n"
-        f"Контакт на завантаженні: {val('load_contact')}\n\n"
-        f"Населений пункт розвантаження: {val('unload_city')}\n"
-        f"Склад розвантаження: {val('unload_place')}\n"
-        f"Спосіб розвантаження: {val('unload_method')}\n"
-        f"Контакт на розвантаженні: {val('unload_contact')}"
-    )
+WEBAPP_MENU_ITEM = "🧾 Заявка у формі"
 
 
-def _build_user_mention(user: Any, fallback: str = "Користувач") -> str:
-    """Побудувати згадку користувача у форматі @username або ПІБ."""
-    if not user:
-        return fallback
-    username = getattr(user, "username", None)
-    if username:
-        return f"@{username}"
-    full_name = getattr(user, "full_name", None)
-    if full_name:
-        return full_name
-    return fallback
+def _webapp_url(**params: str) -> Optional[str]:
+    """URL міні-додатка (якщо налаштовано WEBAPP_URL) з параметрами ?edit= / ?copy=."""
+    base = (os.getenv("WEBAPP_URL") or "").strip()
+    if not base:
+        return None
+    if params:
+        base += ("&" if "?" in base else "?") + urlencode(params)
+    return base
 
 
-def _initialize_creation_metadata(data: Dict[str, Any], user: Any, force: bool = False) -> None:
-    """Заповнити метадані створення заявки (хто/коли)."""
-    kyiv_tz = pytz.timezone('Europe/Kyiv')
-    now = datetime.now(kyiv_tz)
-    if force or not str(data.get("created_date") or "").strip():
-        data["created_date"] = now.strftime("%d.%m.%Y")
-    if force or not str(data.get("created_time") or "").strip():
-        data["created_time"] = now.strftime("%H:%M")
-    if force or not str(data.get("created_by_mention") or "").strip():
-        data["created_by_mention"] = _build_user_mention(user)
+def _webapp_button(text: str, **params: str) -> Optional[InlineKeyboardButton]:
+    url = _webapp_url(**params)
+    return InlineKeyboardButton(text=text, web_app=WebAppInfo(url=url)) if url else None
 
 
-def _ensure_creation_metadata_from_request_row(data: Dict[str, Any], request_row: Optional[Dict[str, Any]]) -> None:
-    """Дозаповнити created_date/created_time з БД для старих заявок без цих полів."""
-    if not request_row:
-        return
-    created_at = request_row.get("created_at")
-    if not created_at:
-        return
-    kyiv_tz = pytz.timezone('Europe/Kyiv')
-    if getattr(created_at, "tzinfo", None) is None:
-        # PostgreSQL часто повертає naive timestamp у UTC.
-        created_at = pytz.UTC.localize(created_at)
-    created_at_kyiv = created_at.astimezone(kyiv_tz)
-    if not str(data.get("created_date") or "").strip():
-        data["created_date"] = created_at_kyiv.strftime("%d.%m.%Y")
-    if not str(data.get("created_time") or "").strip():
-        data["created_time"] = created_at_kyiv.strftime("%H:%M")
+def _request_edit_block_reason(request: Dict[str, Any], user: Any) -> Optional[str]:
+    data = request.get("request_data") if isinstance(request.get("request_data"), dict) else {}
+    return services.edit_block_reason(request.get("status"), data, is_admin=_is_admin_user(user))
 
 
-async def _ensure_creator_mention_from_request_owner(
-    data: Dict[str, Any],
-    request_row: Optional[Dict[str, Any]],
+def _start_copy_in_context(
     context: ContextTypes.DEFAULT_TYPE,
-) -> None:
-    """Спробувати відновити created_by_mention по owner user_id для старих заявок."""
-    if str(data.get("created_by_mention") or "").strip():
-        return
-    if not request_row:
-        return
-
-    owner_user_id = request_row.get("user_id")
-    if owner_user_id is None:
-        return
-
-    try:
-        owner_chat = await context.bot.get_chat(int(owner_user_id))
-        data["created_by_mention"] = _build_user_mention(owner_chat)
-    except Exception as e:
-        logging.warning(f"Failed to resolve request owner mention for user_id={owner_user_id}: {e}")
-
-
-def _build_edit_footer(editor_user: Any) -> str:
-    """Побудувати короткий блок про останнє редагування заявки."""
-    kyiv_tz = pytz.timezone('Europe/Kyiv')
-    now = datetime.now(kyiv_tz)
-    edited_by = _build_user_mention(editor_user)
-    return (
-        f"Вніс зміни: {edited_by}\n"
-        f"Дата і час: {now.strftime('%d.%m.%Y')} - {now.strftime('%H:%M')}"
-    )
-
-
-def _build_request_notification(
-    request_id: str,
-    request_data: Dict[str, Any],
-    fallback_user: Any,
-    edit_footer: Optional[str] = None,
+    source_data: Dict[str, Any],
+    source_request_id: str,
+    clear_dates: bool = False,
 ) -> str:
-    """Зібрати повний текст повідомлення заявки для групи."""
-    creator_mention = str(request_data.get("created_by_mention") or "").strip() or _build_user_mention(fallback_user)
-    application_text = _format_application(request_data)
-    if edit_footer:
-        application_text = f"{application_text}\n\n-------\n{edit_footer}"
-    return f"📋 {creator_mention} створив нову заявку:\n🆔 ID заявки: {request_id}\n\n{application_text}"
+    """Завантажити в діалог нову заявку (новий ID) на основі існуючої. Повертає новий ID."""
+    new_request_id = services.generate_request_id()
+    copy_data = services.prepare_copy_data(source_data, new_request_id, source_request_id, clear_dates=clear_dates)
+    if not copy_data.get("department"):
+        copy_data["department"] = "Виробництво"
+        copy_data["thread_id"] = THREAD_IDS["Виробництво"]
+    context.user_data.clear()
+    context.user_data.update(copy_data)
+    context.user_data["last_request_id"] = new_request_id
+    context.user_data["is_request_edit"] = False  # копія — нова заявка, не оновлення
+    context.user_data["is_copy"] = True
+    logging.info(f"Copy of {source_request_id} → {new_request_id} (clear_dates={clear_dates})")
+    return new_request_id
+
+
+async def _reply_edit_blocked(send, request_id: str, reason: str) -> None:
+    """Пояснити, чому редагування заборонене, і запропонувати нову заявку на основі цієї."""
+    parent_id = _resolve_parent_request_id(request_id)
+    request = db.get_request(parent_id)
+    status = services.normalize_status((request or {}).get("status"))
+    if not request or status == services.STATUS_DELETED:
+        await send(f"⛔ {reason}")
+        return
+
+    rows = [[InlineKeyboardButton(text="📋 Нова заявка з новою датою", callback_data=f"REQACT:COPYNEW:{parent_id}")]]
+    form_button = _webapp_button("🧾 Нова заявка у формі", copy=parent_id)
+    if form_button:
+        rows.append([form_button])
+    await send(
+        f"⛔ {reason}\n\n"
+        "Щоб змінити дату, обсяг чи інші дані — створіть нову заявку на основі цієї. "
+        "Вона отримає новий номер і окремий рядок у журналі.",
+        reply_markup=InlineKeyboardMarkup(rows),
+    )
 
 
 async def show_start_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -1317,6 +959,8 @@ async def show_start_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         "📋 Мої заявки",
         "🆔 Мій ID",
     ]
+    if _webapp_url():
+        menu_items.insert(2, WEBAPP_MENU_ITEM)
 
     if _is_admin_user(update.effective_user):
         menu_items.append("🔎 Пошук/редагування заявки")
@@ -1492,6 +1136,10 @@ async def handle_start_menu_choice(update: Update, context: ContextTypes.DEFAULT
         if request_id:
             # Отримати заявку з БД
             request = db.get_request(request_id)
+            block_reason = _request_edit_block_reason(request, update.effective_user) if request else None
+            if block_reason:
+                await _reply_edit_blocked(update.message.reply_text, request_id, block_reason)
+                return START
             if request:
                 # Відновити дані заявки в context
                 request_data = request.get("request_data", {})
@@ -1541,7 +1189,7 @@ async def handle_start_menu_choice(update: Update, context: ContextTypes.DEFAULT
             
             # Оновити Sheets
             try:
-                sheets.mark_request_deleted(request_id)
+                await asyncio.to_thread(sheets.mark_request_deleted, request_id)
             except Exception as e:
                 logging.error(f"Failed to mark request as deleted in sheets: {e}")
             
@@ -1572,6 +1220,18 @@ async def handle_start_menu_choice(update: Update, context: ContextTypes.DEFAULT
 
     elif text == "📋 Мої заявки":
         return await my_requests_command(update, context)
+
+    elif text == WEBAPP_MENU_ITEM:
+        form_button = _webapp_button("🧾 Відкрити форму заявки")
+        if not form_button:
+            await update.message.reply_text("Форма поки не налаштована (немає WEBAPP_URL).")
+            return START
+        await update.message.reply_text(
+            "Заповніть заявку у формі — усі поля на одному екрані.\n"
+            "Після надсилання заявка з'явиться в робочому чаті так само, як із чату з ботом.",
+            reply_markup=InlineKeyboardMarkup([[form_button]]),
+        )
+        return START
 
     elif text == "🆔 Мій ID":
         user = update.effective_user
@@ -2666,21 +2326,8 @@ async def handle_summary_action_callback(update: Update, context: ContextTypes.D
             await query.answer("Помилка даних заявки", show_alert=True)
             return START
 
-        new_request_id = str(uuid.uuid4())[:8].upper()
-
-        # Завантажуємо дані копії в context як нову заявку в режимі редагування
-        context.user_data.clear()
-        context.user_data.update(source_data)
-        context.user_data.pop("created_date", None)
-        context.user_data.pop("created_time", None)
-        context.user_data.pop("created_by_mention", None)
-        context.user_data["request_id"] = new_request_id
-        context.user_data["last_request_id"] = new_request_id
+        new_request_id = _start_copy_in_context(context, source_data, request_id.upper())
         context.user_data["editing_mode"] = True
-        context.user_data["is_request_edit"] = False  # копія — нова заявка, не оновлення
-        context.user_data["is_copy"] = True
-        context.user_data["copy_source_id"] = request_id.upper()
-        context.user_data["original_request_data"] = dict(source_data)
 
         # Повідомляємо і відкриваємо поля для редагування
         fake_msg = query.message
@@ -2729,7 +2376,7 @@ async def handle_summary_action_callback(update: Update, context: ContextTypes.D
                 logging.error(f"Failed to delete group message for {request_id}: {e}")
 
         try:
-            sheets.mark_request_deleted(request_id)
+            await asyncio.to_thread(sheets.mark_request_deleted, request_id)
         except Exception as e:
             logging.error(f"Failed to mark request as deleted in sheets from summary: {e}")
 
@@ -3458,204 +3105,31 @@ async def handle_edit_choice(update: Update, context: ContextTypes.DEFAULT_TYPE)
     return EDIT
 
 
-def _get_changes_text(original_data: dict, new_data: dict) -> str:
-    """Створити текст з переліком змін між оригінальними та новими даними."""
-    changes = []
-    
-    # Список полів для відстеження з їх описами
-    field_labels = {
-        "department": "🏷️ Запит від",
-        "vehicle_type": "🚛 Тип авто",
-        "initiator": "👤 Ініціатор",
-        "company": "🏢 Підприємство",
-        "cargo_type": "📦 Вантаж",
-        "size_type": "📐 Габарит / негабарит",
-        "big_bag_weight": "⚖️ Вага 1 біг-бегу",
-        "volume": "📊 Обсяг",
-        "notes": "💬 Примітки",
-        "date_period": "📅 Дата / період",
-        "load_city": "📍 Завантаження",
-        "load_place": "🏭 Склад завантаження",
-        "load_method": "⬆️ Спосіб завантаження",
-        "unload_city": "📍 Розвантаження",
-        "unload_place": "🏭 Склад розвантаження",
-        "unload_method": "⬇️ Спосіб розвантаження",
-        "load_contact": "📞 Контакт (завантаження)",
-        "unload_contact": "📞 Контакт (розвантаження)",
-    }
+POST_SEND_KEYBOARD = [
+    ["✏️ Редагувати заявку"],
+    ["🗑️ Видалити заявку"],
+    ["💾 Зберегти як шаблон"],
+    ["✅ Готово"],
+]
 
-    def normalize_value(value: Any) -> str:
-        if value is None:
-            return "—"
-        if isinstance(value, str):
-            cleaned = value.strip()
-            return cleaned if cleaned else "—"
-        return str(value)
-    
-    for field, label in field_labels.items():
-        old_val = normalize_value(original_data.get(field))
-        new_val = normalize_value(new_data.get(field))
-        
-        if old_val != new_val:
-            changes.append(f"{label}: {old_val} → {new_val}")
-    
-    if changes:
-        return "✏️ Зміни:\n" + "\n".join(changes)
-    else:
-        return "✏️ Заявку відредаговано"
+
+def _post_send_keyboard() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        [[KeyboardButton(text=label) for label in row] for row in POST_SEND_KEYBOARD],
+        resize_keyboard=True,
+        one_time_keyboard=True,
+    )
 
 
 async def confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     text = (update.message.text or "").strip()
-    
+
     logging.info(f"confirm() called with text='{text}', is_request_edit={context.user_data.get('is_request_edit')}, request_id={context.user_data.get('request_id')}")
 
     # Швидка заявка - "Додати деталі"
     if text == "✏️ Додати деталі":
         context.user_data["quick_mode"] = False  # Виходимо зі швидкого режиму
         return await show_edit_fields(update, context)
-    
-    # Швидка заявка - "Надіслати"
-    if text == "📤 Надіслати":
-        # Надіслати заявку одразу (ті ж дії що й "ТАК")
-        chat_id = os.getenv("TARGET_CHAT_ID")
-        if not chat_id:
-            await update.message.reply_text(
-                "Не задано TARGET_CHAT_ID. Додайте змінну середовища.",
-                reply_markup=ReplyKeyboardRemove(),
-            )
-            return ConversationHandler.END
-
-        request_id = context.user_data.get("request_id") or uuid.uuid4().hex[:8].upper()
-        context.user_data["request_id"] = request_id
-        thread_id = context.user_data.get("thread_id")
-        
-        # Для нової заявки фіксуємо первинні дані створення.
-        user = update.effective_user
-        force_meta_refresh = bool(context.user_data.get("is_copy"))
-        _initialize_creation_metadata(context.user_data, user, force=force_meta_refresh)
-        notification = _build_request_notification(request_id, context.user_data, user)
-        
-        # Надіслати в груповий чат та зберегти message_id
-        logging.info(f"Quick request: sending {request_id} to chat {chat_id}, thread_id={thread_id}")
-        try:
-            message = await context.bot.send_message(
-                chat_id=chat_id,
-                text=notification,
-                message_thread_id=thread_id,
-            )
-            message_id = message.message_id
-            logging.info(f"✅ Quick request {request_id} sent successfully, message_id={message_id}")
-        except Exception as send_error:
-            logging.error(f"❌ Failed to send quick request {request_id}: {send_error}", exc_info=True)
-            await update.message.reply_text(
-                f"⚠️ Помилка відправки заявки в чат!\n"
-                f"Спробуйте ще раз або зверніться до адміністратора.",
-                reply_markup=ReplyKeyboardRemove()
-            )
-            return ConversationHandler.END
-        
-        # Зберегти заявку в БД з message_id
-        try:
-            db.save_request(
-                request_id=request_id,
-                user_id=user.id,
-                request_data=context.user_data,
-                message_id=message_id,
-                thread_id=thread_id
-            )
-        except Exception as e:
-            logging.error(f"Error saving request to database: {e}")
-        
-        # Експорт у Google Sheets
-        export_success = False
-        export_error = ""
-        try:
-            export_success, export_error = sheets.export_to_sheets(context.user_data)
-            if not export_success:
-                # Сповістити адміна про помилку
-                admin_id = os.getenv("ADMIN_USER_ID")
-                if admin_id:
-                    user = update.effective_user
-                    user_info = f"@{user.username}" if user.username else user.full_name
-                    try:
-                        await context.bot.send_message(
-                            chat_id=admin_id,
-                            text=f"⚠️ Помилка експорту в Google Sheets!\n\n"
-                                 f"🆔 ID заявки: {request_id}\n"
-                                 f"👤 Користувач: {user_info}\n"
-                                 f"❌ Причина: {export_error or 'невідома'}\n"
-                                 f"📄 Заявка надіслана в чат, але не експортована в таблицю.\n\n"
-                                 f"Перевірте логи бота на Railway."
-                        )
-                    except Exception as notify_error:
-                        logging.error(f"Failed to notify admin about export failure: {notify_error}")
-        except Exception as e:
-            logging.error(f"Failed to export to Google Sheets: {e}")
-            # Сповістити адміна
-            admin_id = os.getenv("ADMIN_USER_ID")
-            if admin_id:
-                user = update.effective_user
-                user_info = f"@{user.username}" if user.username else user.full_name
-                try:
-                    await context.bot.send_message(
-                        chat_id=admin_id,
-                        text=f"❌ Критична помилка експорту!\n\n"
-                             f"🆔 ID заявки: {request_id}\n"
-                             f"👤 Користувач: {user_info}\n"
-                             f"❌ Помилка: {str(e)[:200]}\n\n"
-                             f"Перевірте логи Railway."
-                    )
-                except Exception as notify_error:
-                    logging.error(f"Failed to notify admin about critical export error: {notify_error}")
-        
-        # Зберегти контакти для автозаповнення
-        try:
-            user_id = update.effective_user.id
-            contacts_to_save = []
-            load_contact = (context.user_data.get("load_contact") or "").strip()
-            unload_contact = (context.user_data.get("unload_contact") or "").strip()
-            if load_contact and load_contact != "—":
-                contacts_to_save.append({
-                    "type": "load",
-                    "value": load_contact
-                })
-            if unload_contact and unload_contact != "—" and unload_contact != load_contact:
-                contacts_to_save.append({
-                    "type": "unload",
-                    "value": unload_contact
-                })
-            if contacts_to_save:
-                save_contacts(user_id, contacts_to_save)
-                logging.info(f"Saved {len(contacts_to_save)} contacts for user {user_id}")
-        except Exception as e:
-            logging.error(f"Failed to save contacts: {e}")
-        
-        # Показати меню редагування/видалення в приватному чаті
-        keyboard = ReplyKeyboardMarkup(
-            [
-                [KeyboardButton(text="✏️ Редагувати заявку")],
-                [KeyboardButton(text="🗑️ Видалити заявку")],
-                [KeyboardButton(text="💾 Зберегти як шаблон")],
-                [KeyboardButton(text="✅ Готово")],
-            ],
-            resize_keyboard=True,
-            one_time_keyboard=True,
-        )
-        await update.message.reply_text(
-            (
-                f"✅ Заявку надіслано!\n"
-                f"📊 Експорт у Google Sheets: {'успішно' if export_success else '❌ не вдалося'}\n"
-                f"🆔 ID заявки: {request_id}\n\n"
-                f"Що робити далі?"
-            ),
-            reply_markup=keyboard
-        )
-        
-        # Зберегти ID заявки для наступного меню
-        context.user_data["last_request_id"] = request_id
-        
-        return START
 
     if text.lower() == "✏️ редагувати поля":
         return await show_edit_fields(update, context)
@@ -3666,260 +3140,54 @@ async def confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         await update.message.reply_text("Заповнення скинуто. Починаємо спочатку.")
         return await ask_question(update, context)
 
-    if text.lower() == "так":
-        chat_id = os.getenv("TARGET_CHAT_ID")
-        if not chat_id:
-            await update.message.reply_text(
-                "Не задано TARGET_CHAT_ID. Додайте змінну середовища.",
-                reply_markup=ReplyKeyboardRemove(),
-            )
-            return ConversationHandler.END
+    # "ТАК" (повна заявка) і "📤 Надіслати" (швидка) йдуть одним конвеєром.
+    if text.lower() != "так" and text != "📤 Надіслати":
+        await update.message.reply_text("Будь ласка, оберіть ТАК або Почати спочатку.")
+        return CONFIRM
 
-        request_id = context.user_data.get("request_id") or uuid.uuid4().hex[:8].upper()
-        context.user_data["request_id"] = request_id
-        user = update.effective_user
-        
-        # Перевірити чи це редагування існуючої заявки
-        is_editing = context.user_data.get("is_request_edit", False)
-        message_id = None
-        notification = ""
-        
-        if is_editing:
-            thread_id = context.user_data.get("thread_id")
-            original_data = context.user_data.get("original_request_data", {})
-            changes_text = _get_changes_text(original_data, context.user_data) if original_data else ""
-            chat_updated = False
-            update_error = None
-            edit_footer = _build_edit_footer(user)
+    user = update.effective_user
+    is_editing = bool(context.user_data.get("is_request_edit", False))
+    result = await publishing.publish_request(
+        context.bot,
+        user,
+        context.user_data,
+        is_edit=is_editing,
+        original_data=context.user_data.get("original_request_data"),
+        is_copy=bool(context.user_data.get("is_copy")),
+    )
 
-            # Отримати message_id з БД
-            try:
-                saved_request = db.get_request(request_id)
-                if saved_request:
-                    _ensure_creation_metadata_from_request_row(context.user_data, saved_request)
-                    await _ensure_creator_mention_from_request_owner(context.user_data, saved_request, context)
-                    message_id = saved_request.get("message_id")
-                    thread_id = saved_request.get("thread_id") or thread_id
-                    notification = _build_request_notification(
-                        request_id,
-                        context.user_data,
-                        None,
-                        edit_footer=edit_footer,
-                    )
-                    
-                    if message_id:
-                        # Редагувати існуюче повідомлення в групі
-                        await context.bot.edit_message_text(
-                            chat_id=chat_id,
-                            message_id=message_id,
-                            text=notification,
-                        )
-                        logging.info(f"Updated message {message_id} for request {request_id}")
-                        chat_updated = True
-                    else:
-                        update_error = f"Missing message_id for request {request_id}"
-                        logging.error(update_error)
-                else:
-                    update_error = f"Request {request_id} not found in DB during edit"
-                    logging.error(update_error)
-            except Exception as e:
-                update_error = str(e)
-                logging.error(f"Error updating message: {e}")
-
-            if changes_text:
-                try:
-                    change_notice = f"🆔 Заявка {request_id}\n{changes_text}"
-                    send_kwargs = {
-                        "chat_id": chat_id,
-                        "text": change_notice,
-                    }
-                    if thread_id is not None:
-                        send_kwargs["message_thread_id"] = thread_id
-                    if message_id:
-                        send_kwargs["reply_to_message_id"] = message_id
-                    await context.bot.send_message(**send_kwargs)
-                except Exception as e:
-                    logging.error(f"Failed to send changes notification: {e}")
-
-            if not chat_updated:
-                await update.message.reply_text(
-                    "⚠️ Зміни збережено в БД та таблиці, але початкове повідомлення в групі не вдалося оновити. "
-                    "Повну заявку повторно в чат не надсилав."
-                )
-        else:
-            # Нова заявка - надіслати нове повідомлення
-            thread_id = context.user_data.get("thread_id")
-            force_meta_refresh = bool(context.user_data.get("is_copy"))
-            _initialize_creation_metadata(context.user_data, user, force=force_meta_refresh)
-            notification = _build_request_notification(request_id, context.user_data, user)
-            department = context.user_data.get("department")
-            logging.info(f"Sending new request {request_id} to chat {chat_id}, department={department}, thread_id={thread_id}")
-            logging.debug(f"Request notification text (first 200 chars): {notification[:200]}")
-            try:
-                message = await context.bot.send_message(
-                    chat_id=chat_id,
-                    text=notification,
-                    message_thread_id=thread_id,
-                )
-                message_id = message.message_id
-                logging.info(f"✅ Successfully sent request {request_id} to chat, message_id={message_id}")
-            except Exception as send_error:
-                logging.error(f"❌ Failed to send request {request_id} to chat: {send_error}", exc_info=True)
-                # Спробувати надіслати без thread_id
-                try:
-                    logging.info(f"Attempting to send without thread_id for request {request_id}")
-                    message = await context.bot.send_message(
-                        chat_id=chat_id,
-                        text=notification,
-                    )
-                    message_id = message.message_id
-                    logging.info(f"✅ Sent request {request_id} to chat without thread_id, message_id={message_id}")
-                except Exception as fallback_error:
-                    logging.error(f"❌ Failed to send request {request_id} even without thread_id: {fallback_error}", exc_info=True)
-                    # Повідомити користувача про помилку
-                    await update.message.reply_text(
-                        f"⚠️ Помилка відправки заявки в чат!\n"
-                        f"Заявка збережена в БД та експортована в Sheets, але не надіслана в груповий чат.\n"
-                        f"Зверніться до адміністратора.",
-                        reply_markup=ReplyKeyboardRemove()
-                    )
-                    return ConversationHandler.END
-            
-            # Зберегти нову заявку в БД
-            try:
-                db.save_request(
-                    request_id=request_id,
-                    user_id=user.id,
-                    request_data=context.user_data,
-                    message_id=message_id,
-                    thread_id=thread_id
-                )
-                logging.info(f"Saved request {request_id} to database")
-            except Exception as e:
-                logging.error(f"Error saving request to database: {e}")
-        
-        # Оновити дані в БД (для редагування)
-        if is_editing:
-            try:
-                db.update_request_data(request_id, context.user_data)
-                logging.info(f"Updated request data for {request_id}")
-            except Exception as e:
-                logging.error(f"Error updating request data: {e}")
-        
-        # Експорт у Google Sheets
-        export_success = False
-        export_error = ""
-        try:
-            export_success, export_error = sheets.export_to_sheets(context.user_data)
-            if not export_success:
-                # Сповістити адміна про помилку
-                admin_id = os.getenv("ADMIN_USER_ID")
-                if admin_id:
-                    user_info = f"@{user.username}" if user.username else user.full_name
-                    try:
-                        await context.bot.send_message(
-                            chat_id=admin_id,
-                            text=f"⚠️ Помилка експорту в Google Sheets!\n\n"
-                                 f"🆔 ID заявки: {request_id}\n"
-                                 f"👤 Користувач: {user_info}\n"
-                                 f"❌ Причина: {export_error or 'невідома'}\n"
-                                 f"📄 Заявка надіслана в чат, але не експортована в таблицю.\n\n"
-                                 f"Перевірте логи бота на Railway."
-                        )
-                    except Exception as notify_error:
-                        logging.error(f"Failed to notify admin about export failure: {notify_error}")
-        except Exception as e:
-            logging.error(f"Failed to export to Google Sheets: {e}")
-            # Сповістити адміна
-            admin_id = os.getenv("ADMIN_USER_ID")
-            if admin_id:
-                user_info = f"@{user.username}" if user.username else user.full_name
-                try:
-                    await context.bot.send_message(
-                        chat_id=admin_id,
-                        text=f"❌ Критична помилка експорту!\n\n"
-                             f"🆔 ID заявки: {request_id}\n"
-                             f"👤 Користувач: {user_info}\n"
-                             f"❌ Помилка: {str(e)[:200]}\n\n"
-                             f"Перевірте логи Railway."
-                    )
-                except Exception as notify_error:
-                    logging.error(f"Failed to notify admin about critical export error: {notify_error}")
-        
-        # Зберегти контакти для автозаповнення
-        try:
-            user_id = update.effective_user.id
-            contacts_to_save = []
-            if context.user_data.get("load_contact") and context.user_data["load_contact"] != "—":
-                contacts_to_save.append({
-                    "type": "load",
-                    "value": context.user_data["load_contact"]
-                })
-            if context.user_data.get("unload_contact") and context.user_data["unload_contact"] != "—":
-                contacts_to_save.append({
-                    "type": "unload",
-                    "value": context.user_data["unload_contact"]
-                })
-            if contacts_to_save:
-                save_contacts(user_id, contacts_to_save)
-                logging.info(f"Saved {len(contacts_to_save)} contacts for user {user_id}")
-        except Exception as e:
-            logging.error(f"Failed to save contacts: {e}")
-        
-        # Якщо це був режим редагування - показати меню повернення до редагування
-        if is_editing:
-            keyboard = ReplyKeyboardMarkup(
-                [
-                    [KeyboardButton(text="✏️ Редагувати заявку")],
-                    [KeyboardButton(text="🗑️ Видалити заявку")],
-                    [KeyboardButton(text="💾 Зберегти як шаблон")],
-                    [KeyboardButton(text="✅ Готово")],
-                ],
-                resize_keyboard=True,
-                one_time_keyboard=True,
-            )
-            await update.message.reply_text(
-                (
-                    f"✅ Заявку оновлено!\n"
-                    f"📊 Експорт у Google Sheets: {'успішно' if export_success else '❌ не вдалося'}\n"
-                    f"🆔 ID заявки: {request_id}\n\n"
-                    f"Що робити далі?"
-                ),
-                reply_markup=keyboard
-            )
-            context.user_data["last_request_id"] = request_id
-            context.user_data.pop("editing_mode", None)
-            context.user_data.pop("is_request_edit", None)
-            return START
-        
-        # Для нових заявок - також показати меню редагування/видалення
-        keyboard = ReplyKeyboardMarkup(
-            [
-                [KeyboardButton(text="✏️ Редагувати заявку")],
-                [KeyboardButton(text="🗑️ Видалити заявку")],
-                [KeyboardButton(text="💾 Зберегти як шаблон")],
-                [KeyboardButton(text="✅ Готово")],
-            ],
-            resize_keyboard=True,
-            one_time_keyboard=True,
-        )
-        await update.message.reply_text(
-            (
-                f"✅ Заявку надіслано!\n"
-                f"📊 Експорт у Google Sheets: {'успішно' if export_success else '❌ не вдалося'}\n"
-                f"🆔 ID заявки: {request_id}\n\n"
-                f"Що робити далі?"
-            ),
-            reply_markup=keyboard
-        )
-        
-        # Зберегти ID заявки для наступного меню
-        context.user_data["last_request_id"] = request_id
-        
+    if result.blocked_reason:
+        await update.message.reply_text("⛔ Зміни не збережено.", reply_markup=ReplyKeyboardRemove())
+        await _reply_edit_blocked(update.message.reply_text, result.request_id, result.blocked_reason)
+        context.user_data.clear()
         return START
 
-    await update.message.reply_text("Будь ласка, оберіть ТАК або Почати спочатку.")
-    return CONFIRM
+    if not result.ok:
+        await update.message.reply_text(f"⚠️ {result.error}", reply_markup=ReplyKeyboardRemove())
+        return ConversationHandler.END
+
+    if is_editing and not result.chat_updated:
+        await update.message.reply_text(
+            "⚠️ Зміни збережено в БД та таблиці, але початкове повідомлення в групі не вдалося оновити. "
+            "Повну заявку повторно в чат не надсилав."
+        )
+
+    headline = "✅ Заявку оновлено!" if is_editing else "✅ Заявку надіслано!"
+    await update.message.reply_text(
+        (
+            f"{headline}\n"
+            f"📊 Експорт у Google Sheets: {'успішно' if result.export_success else '❌ не вдалося'}\n"
+            f"🆔 ID заявки: {result.request_id}\n\n"
+            f"Що робити далі?"
+        ),
+        reply_markup=_post_send_keyboard(),
+    )
+
+    # Зберегти ID заявки для наступного меню
+    context.user_data["last_request_id"] = result.request_id
+    for key in ("editing_mode", "is_request_edit", "is_copy", "original_request_data"):
+        context.user_data.pop(key, None)
+    return START
 
 
 async def handle_save_template_response(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -4078,11 +3346,22 @@ async def delete_request_command(update: Update, context: ContextTypes.DEFAULT_T
         )
         return
 
-    request_id = context.args[0].strip().upper()
+    request_id = _resolve_parent_request_id(context.args[0])
     user = update.effective_user
-    deleted_by = f"@{user.username}" if user and user.username else (user.full_name if user else "Unknown")
+    request, allowed = await _load_request_for_command(update, request_id)
+    if not allowed:
+        return
+    deleted_by = _build_user_mention(user, "Unknown")
 
-    success, message = sheets.mark_request_deleted(request_id, deleted_by=deleted_by)
+    if request:
+        db.mark_request_as_deleted(request_id, deleted_by)
+        if request.get("message_id") and os.getenv("TARGET_CHAT_ID"):
+            try:
+                await context.bot.delete_message(chat_id=os.getenv("TARGET_CHAT_ID"), message_id=request["message_id"])
+            except Exception as e:
+                logging.error(f"Failed to delete group message for {request_id}: {e}")
+
+    success, message = await asyncio.to_thread(sheets.mark_request_deleted, request_id, deleted_by)
     if success:
         await update.message.reply_text(f"✅ {message}")
     else:
@@ -4098,15 +3377,45 @@ async def restore_request_command(update: Update, context: ContextTypes.DEFAULT_
         )
         return
 
-    request_id = context.args[0].strip().upper()
+    request_id = _resolve_parent_request_id(context.args[0])
     user = update.effective_user
-    restored_by = f"@{user.username}" if user and user.username else (user.full_name if user else "Unknown")
+    request, allowed = await _load_request_for_command(update, request_id)
+    if not allowed:
+        return
+    restored_by = _build_user_mention(user, "Unknown")
 
-    success, message = sheets.restore_request(request_id, restored_by=restored_by)
+    # Раніше статус змінювався тільки в таблиці, і в БД заявка лишалась ВИДАЛЕНО.
+    if request:
+        db.set_request_status(request_id, services.STATUS_ACTIVE, restored_by)
+
+    success, message = await asyncio.to_thread(sheets.restore_request, request_id, restored_by)
     if success:
         await update.message.reply_text(f"✅ {message}")
     else:
         await update.message.reply_text(f"❌ {message}")
+
+
+async def _load_request_for_command(update: Update, request_id: str) -> Tuple[Optional[Dict[str, Any]], bool]:
+    """Знайти заявку для /delete_request та /restore_request і перевірити права."""
+    user = update.effective_user
+    request = db.get_request(request_id)
+    is_admin = _is_admin_user(user)
+    if not request and not is_admin:
+        await update.message.reply_text(f"❌ Заявку з ID {request_id} не знайдено")
+        return None, False
+    if request and int(request.get("user_id", 0)) != int(user.id if user else 0) and not is_admin:
+        await update.message.reply_text("❌ Можна керувати тільки власними заявками")
+        return request, False
+    return request, True
+
+
+async def remind_now_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Адмін: надіслати нагадування логістам просто зараз (для перевірки)."""
+    if not _is_admin_user(update.effective_user):
+        await update.message.reply_text("❌ Команда доступна лише адміну")
+        return
+    count = await reminders.send_due_reminders(context.bot)
+    await update.message.reply_text(f"⏰ Надіслано нагадувань: {count}")
 
 
 PAGE_SIZE = 3
@@ -4118,13 +3427,15 @@ async def _send_requests_page(
     offset: int,
     user_id: int,
     total: int,
+    is_admin: bool = False,
 ) -> None:
     """Надіслати одну сторінку заявок з кнопками керування."""
     page = request_entries[offset:offset + PAGE_SIZE]
     for req in page:
         rid = req.get("display_request_id", req.get("request_id", "—"))
         parent_rid = req.get("parent_request_id", req.get("request_id", "—"))
-        status = req.get("status", "—")
+        status_value = services.normalize_status(req.get("status"))
+        status = f"{services.STATUS_EMOJI.get(status_value, '')} {status_value}".strip()
         created_at = req.get("created_at")
         created_str = created_at.strftime("%d.%m %H:%M") if created_at else "—"
         data = req.get("request_data") or {}
@@ -4143,19 +3454,26 @@ async def _send_requests_page(
             f"  👤 Ініціатор: {initiator}\n"
             f"  📦 Вантаж: {cargo}\n"
             f"  ⚖️ Обсяг: {volume_text}\n"
-            f"  📍 Маршрут: {load_city} → {unload_city}"
+            f"  📍 Маршрут: {load_city} → {unload_city}\n"
+            f"  📅 Перевезення: {data.get('date_period') or '—'}"
             f"{split_suffix}"
         )
-        keyboard = InlineKeyboardMarkup([
-            [
+        block_reason = services.edit_block_reason(req.get("status"), data, is_admin=is_admin)
+        rows: List[List[InlineKeyboardButton]] = []
+        if block_reason:
+            info_text += "\n  🔒 Редагування закрите — можна створити нову заявку на її основі"
+            rows.append([InlineKeyboardButton(text="📋 Нова з новою датою", callback_data=f"REQACT:COPYNEW:{parent_rid}")])
+            form_button = _webapp_button("🧾 Нова у формі", copy=parent_rid)
+        else:
+            rows.append([
                 InlineKeyboardButton(text="✏️ Редагувати", callback_data=f"REQACT:EDIT:{rid}"),
-                InlineKeyboardButton(text="🗑️ Видалити", callback_data=f"REQACT:DEL:{rid}"),
-            ],
-            [
-                InlineKeyboardButton(text="📋 Копія заявки", callback_data=f"REQACT:COPY:{parent_rid}"),
-            ]
-        ])
-        await send_func(info_text, reply_markup=keyboard)
+                InlineKeyboardButton(text="📋 Копія", callback_data=f"REQACT:COPY:{parent_rid}"),
+            ])
+            form_button = _webapp_button("🧾 Редагувати у формі", edit=parent_rid)
+        if form_button:
+            rows.append([form_button])
+        rows.append([InlineKeyboardButton(text="🗑️ Видалити", callback_data=f"REQACT:DEL:{rid}")])
+        await send_func(info_text, reply_markup=InlineKeyboardMarkup(rows))
 
     next_offset = offset + PAGE_SIZE
     if next_offset < total:
@@ -4196,6 +3514,7 @@ async def my_requests_command(update: Update, context: ContextTypes.DEFAULT_TYPE
         offset=0,
         user_id=user.id,
         total=total,
+        is_admin=_is_admin_user(user),
     )
     return ConversationHandler.END
 
@@ -4225,11 +3544,21 @@ async def _persist_child_edit_and_sync(update: Update, context: ContextTypes.DEF
         await update.message.reply_text("❌ Батьківську заявку не знайдено")
         return START
 
+    block_reason = _request_edit_block_reason(request, update.effective_user)
+    if block_reason:
+        for key in ["child_edit_parent_id", "child_edit_child_id", "child_edit_items"]:
+            context.user_data.pop(key, None)
+        await update.message.reply_text("⛔ Зміни не збережено.", reply_markup=ReplyKeyboardRemove())
+        await _reply_edit_blocked(update.message.reply_text, parent_request_id, block_reason)
+        return START
+
     request_data = request.get("request_data") or {}
     if not isinstance(request_data, dict):
         await update.message.reply_text("❌ Пошкоджені дані заявки")
         return START
 
+    previous_data = dict(request_data)
+    request_data = dict(request_data)
     request_data["request_id"] = parent_request_id
     unload_city, distribution, ids_map, total = _rebuild_distribution_from_items(child_items)
     request_data["unload_city"] = unload_city
@@ -4239,32 +3568,12 @@ async def _persist_child_edit_and_sync(update: Update, context: ContextTypes.DEF
     if len(_split_location_values(unload_city)) > 1:
         request_data["unload_place"] = "—"
 
-    db.update_request_data(parent_request_id, request_data)
-
-    chat_id = os.getenv("TARGET_CHAT_ID")
     user = update.effective_user
-    _ensure_creation_metadata_from_request_row(request_data, request)
-    notification = _build_request_notification(
-        parent_request_id,
-        request_data,
-        None,
-        edit_footer=_build_edit_footer(user),
-    )
-
-    try:
-        if request.get("message_id") and chat_id:
-            await context.bot.edit_message_text(
-                chat_id=chat_id,
-                message_id=request.get("message_id"),
-                text=notification,
-            )
-    except Exception as e:
-        logging.error(f"Failed to update parent message after child edit: {e}")
-
-    try:
-        sheets.export_to_sheets(request_data)
-    except Exception as e:
-        logging.error(f"Failed to export child edit to sheets: {e}")
+    request_data["last_edit_footer"] = _build_edit_footer(user)
+    request_data.pop("status_footer", None)
+    db.update_request_data(parent_request_id, request_data)
+    await publishing.refresh_group_message(context.bot, request, request_data)
+    await publishing.export_request_to_sheets(context.bot, request_data, user, previous_data=previous_data)
 
     for key in [
         "child_edit_parent_id",
@@ -4395,6 +3704,7 @@ async def handle_request_action_callback(update: Update, context: ContextTypes.D
             offset=offset,
             user_id=user.id,
             total=total,
+            is_admin=_is_admin_user(user),
         )
         return ConversationHandler.END
 
@@ -4416,8 +3726,9 @@ async def handle_request_action_callback(update: Update, context: ContextTypes.D
         return START
 
     if action == "EDIT":
-        if (request.get("status") or "").strip().upper() == "ВИДАЛЕНО":
-            await query.answer("Заявка видалена. Спочатку відновіть її.", show_alert=True)
+        block_reason = _request_edit_block_reason(request, user)
+        if block_reason:
+            await _reply_edit_blocked(query.message.reply_text, parent_request_id, block_reason)
             return START
 
         request_data = request.get("request_data") or {}
@@ -4426,7 +3737,7 @@ async def handle_request_action_callback(update: Update, context: ContextTypes.D
             return START
 
         if is_child_action:
-            child_items = _build_child_items_from_data(parent_request_id, request_data)
+            child_items = _build_child_items_from_data(request_data, parent_request_id)
             target = next((item for item in child_items if item.get("child_id") == request_id), None)
             if not target:
                 await query.answer("Підзаявку не знайдено", show_alert=True)
@@ -4466,7 +3777,7 @@ async def handle_request_action_callback(update: Update, context: ContextTypes.D
                 await query.answer("Дані заявки пошкоджені", show_alert=True)
                 return START
 
-            child_items = _build_child_items_from_data(parent_request_id, request_data)
+            child_items = _build_child_items_from_data(request_data, parent_request_id)
             before_count = len(child_items)
             child_items = [item for item in child_items if item.get("child_id") != request_id]
             if len(child_items) == before_count:
@@ -4487,7 +3798,7 @@ async def handle_request_action_callback(update: Update, context: ContextTypes.D
                         logging.error(f"Failed to delete group message for {parent_request_id}: {e}")
 
                 try:
-                    sheets.mark_request_deleted_exact(request_id)
+                    await asyncio.to_thread(sheets.mark_request_deleted_exact, request_id)
                 except Exception as e:
                     logging.error(f"Failed to mark child request as deleted in sheets: {e}")
 
@@ -4530,11 +3841,11 @@ async def handle_request_action_callback(update: Update, context: ContextTypes.D
                 logging.error(f"Failed to update parent message after child delete: {e}")
 
             try:
-                sheets.mark_request_deleted_exact(request_id)
+                await asyncio.to_thread(sheets.mark_request_deleted_exact, request_id)
             except Exception as e:
                 logging.error(f"Failed to mark child request as deleted in sheets: {e}")
             try:
-                sheets.export_to_sheets(request_data)
+                await asyncio.to_thread(sheets.export_to_sheets, services.sanitize_request_data(request_data))
             except Exception as e:
                 logging.error(f"Failed to sync parent request after child delete: {e}")
 
@@ -4555,7 +3866,7 @@ async def handle_request_action_callback(update: Update, context: ContextTypes.D
                 logging.error(f"Failed to delete group message for {parent_request_id}: {e}")
 
         try:
-            sheets.mark_request_deleted(parent_request_id)
+            await asyncio.to_thread(sheets.mark_request_deleted, parent_request_id)
         except Exception as e:
             logging.error(f"Failed to mark request as deleted in sheets: {e}")
 
@@ -4571,8 +3882,8 @@ async def handle_request_action_callback(update: Update, context: ContextTypes.D
         fake_update = type('obj', (object,), {'message': query.message, 'effective_user': update.effective_user})()
         return await show_start_menu(fake_update, context)
 
-    if action == "COPY":
-        # Створити копію заявки з новим ID
+    if action in ("COPY", "COPYNEW"):
+        # Створити нову заявку (новий ID) на основі існуючої
         request_data = request.get("request_data") or {}
         if not isinstance(request_data, dict):
             await query.answer("Дані заявки пошкоджені", show_alert=True)
@@ -4583,48 +3894,28 @@ async def handle_request_action_callback(update: Update, context: ContextTypes.D
             await query.answer("Не вдалося отримати дані користувача", show_alert=True)
             return START
 
-        # Згенерувати новий ID для копії
-        new_request_id = uuid.uuid4().hex[:8].upper()
-        
-        # Очистити context і завантажити дані
-        context.user_data.clear()
-        context.user_data.update(request_data)
-        context.user_data.pop("created_date", None)
-        context.user_data.pop("created_time", None)
-        context.user_data.pop("created_by_mention", None)
-        context.user_data["request_id"] = new_request_id
-        context.user_data["last_request_id"] = new_request_id
-        # Явно встановлюємо що це НЕ редагування - це нова заявка (копія)
-        context.user_data["is_request_edit"] = False
-        context.user_data.pop("editing_mode", None)
-        context.user_data.pop("original_request_data", None)
-        
-        # Перевірка критичних полів
-        copied_thread_id = context.user_data.get("thread_id")
-        copied_department = context.user_data.get("department")
-        logging.info(f"Created copy of request {request_id} with new ID {new_request_id}, department={copied_department}, thread_id={copied_thread_id}")
-        
-        if not copied_department:
-            logging.warning(f"Copy request {new_request_id}: department not found, setting default")
-            # Встановити за замовчуванням якщо немає
-            context.user_data["department"] = "Виробництво"
-            context.user_data["thread_id"] = THREAD_IDS.get("Виробництво")
-            logging.info(f"Set default department=Виробництво, thread_id={context.user_data['thread_id']}")
-        elif copied_thread_id is None:
-            # Якщо department є, але thread_id немає - встановити на основі department
-            logging.warning(f"Copy request {new_request_id}: thread_id is None, setting based on department={copied_department}")
-            context.user_data["thread_id"] = THREAD_IDS.get(copied_department)
-            logging.info(f"Set thread_id={context.user_data['thread_id']} based on department={copied_department}")
-        
+        # Якщо дата перевезення вже минула — нова заявка обов'язково з новою датою.
+        ask_new_date = action == "COPYNEW" or services.is_delivery_expired(request_data)
+        new_request_id = _start_copy_in_context(context, request_data, parent_request_id, clear_dates=ask_new_date)
+
+        if ask_new_date:
+            context.user_data["question_index"] = DATE_QUESTION_INDEX
+            context.user_data["editing_mode"] = True
+            await query.message.reply_text(
+                f"📋 Нова заявка {new_request_id} на основі {parent_request_id}.\n"
+                "Оберіть нову дату перевезення — далі на екрані підтвердження можна змінити обсяг та інші поля."
+            )
+            fake_update = type('obj', (object,), {'message': query.message, 'effective_user': update.effective_user})()
+            return await ask_question(fake_update, context)
+
         try:
-            # Відправити копію у прива тний чат користувача
-            msg = await context.bot.send_message(
+            await context.bot.send_message(
                 chat_id=user.id,
-                text=f"📋 Створено копію заявки {request_id}\n"
+                text=f"📋 Створено копію заявки {parent_request_id}\n"
                      f"🆔 Новий ID заявки: {new_request_id}\n\n"
                      f"Дані завантажені. Перевірте та підтвердіть:"
             )
-            
+
             # Показати меню підтвердження для копійованої заявки
             application_text = _format_application(context.user_data)
             keyboard = ReplyKeyboardMarkup(
@@ -4688,8 +3979,9 @@ async def _open_request_for_edit_by_id(update: Update, context: ContextTypes.DEF
         await update.message.reply_text("❌ Ви можете редагувати лише власні заявки")
         return START
 
-    if (request.get("status") or "").strip().upper() == "ВИДАЛЕНО":
-        await update.message.reply_text("❌ Цю заявку позначено як ВИДАЛЕНО. Відновіть її командою /restore_request <ID>.")
+    block_reason = _request_edit_block_reason(request, user)
+    if block_reason:
+        await _reply_edit_blocked(update.message.reply_text, parent_request_id, block_reason)
         return START
 
     request_data = request.get("request_data") or {}
@@ -4698,7 +3990,7 @@ async def _open_request_for_edit_by_id(update: Update, context: ContextTypes.DEF
         return START
 
     if is_child_action:
-        child_items = _build_child_items_from_data(parent_request_id, request_data)
+        child_items = _build_child_items_from_data(request_data, parent_request_id)
         target = next((item for item in child_items if item.get("child_id") == request_id), None)
         if not target:
             await update.message.reply_text(f"❌ Підзаявку з ID {request_id} не знайдено")
@@ -4826,21 +4118,8 @@ async def handle_copy_request_confirm(update: Update, context: ContextTypes.DEFA
         await query.edit_message_text("❌ Дані для копіювання втрачено, спробуйте знову")
         return START
 
-    new_request_id = str(uuid.uuid4())[:8].upper()
-
-    # Завантажуємо скопійовані дані як нову заявку в режимі редагування
-    context.user_data.clear()
-    context.user_data.update(source_data)
-    context.user_data.pop("created_date", None)
-    context.user_data.pop("created_time", None)
-    context.user_data.pop("created_by_mention", None)
-    context.user_data["request_id"] = new_request_id
-    context.user_data["last_request_id"] = new_request_id
+    new_request_id = _start_copy_in_context(context, source_data, source_id or "")
     context.user_data["editing_mode"] = True
-    context.user_data["is_request_edit"] = False  # копія — нова заявка, не оновлення
-    context.user_data["is_copy"] = True
-    context.user_data["copy_source_id"] = source_id.upper() if source_id else ""
-    context.user_data["original_request_data"] = dict(source_data)
 
     # Відкриваємо поля для редагування
     class _FakeUpdate:
@@ -4867,7 +4146,13 @@ def build_app() -> Application:
     if not token:
         raise RuntimeError("TELEGRAM_BOT_TOKEN is not set")
 
-    app = Application.builder().token(token).build()
+    app = (
+        Application.builder()
+        .token(token)
+        .post_init(_post_init)
+        .post_shutdown(_post_shutdown)
+        .build()
+    )
 
     # Ініціалізувати БД
     db.init_db()
@@ -5008,7 +4293,24 @@ def build_app() -> Application:
     app.add_handler(CommandHandler("request", request_button))
     app.add_handler(CommandHandler("delete_request", delete_request_command))
     app.add_handler(CommandHandler("restore_request", restore_request_command))
+    app.add_handler(CommandHandler("remind_now", remind_now_command))
+    # Кнопки під нагадуваннями в робочій групі (Виконано / Перенести / Скасовано)
+    app.add_handler(CallbackQueryHandler(reminders.handle_reminder_callback, pattern=reminders.CALLBACK_PATTERN))
     return app
+
+
+async def _post_init(app: Application) -> None:
+    if reminders.reminders_enabled():
+        if app.job_queue:
+            app.job_queue.run_daily(reminders.reminder_job, time=reminders.reminder_time(), name="daily_reminders")
+            logging.info(f"Daily reminders scheduled at {reminders.reminder_time().strftime('%H:%M')} (Kyiv)")
+        else:
+            logging.warning("JobQueue недоступна: встановіть python-telegram-bot[job-queue], нагадування вимкнено")
+    await webapp_server.start(app)
+
+
+async def _post_shutdown(app: Application) -> None:
+    await webapp_server.stop(app)
 
 
 def main() -> None:

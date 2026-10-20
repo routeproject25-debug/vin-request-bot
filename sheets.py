@@ -233,7 +233,7 @@ def get_sheets_client():
         return None
 
 
-def export_to_sheets(data: Dict[str, Any]) -> Tuple[bool, str]:
+def export_to_sheets(data: Dict[str, Any], status: str = "АКТИВНА") -> Tuple[bool, str]:
     """
     Експортувати заявку в Google Sheets
     
@@ -349,7 +349,7 @@ def export_to_sheets(data: Dict[str, Any]) -> Tuple[bool, str]:
         request_id = (data.get("request_id") or "").strip().upper()
         base_values_by_header = {
             "ID заявки": request_id or "—",
-            "Статус": "АКТИВНА",
+            "Статус": status or "АКТИВНА",
             "Дата": date_str,
             "Час": time_str,
             "Ініціатор заявки": data.get("initiator", "—"),
@@ -606,6 +606,75 @@ def mark_request_deleted_exact(request_id: str, deleted_by: str = "") -> Tuple[b
     except Exception as e:
         logger.error(f"Error marking request deleted exactly: {e}")
         return False, f"Помилка при позначенні заявки: {e}"
+
+
+def set_request_status(
+    request_id: str,
+    status: str,
+    changed_by: str = "",
+    execution: Optional[bool] = None,
+    exact: bool = False,
+) -> Tuple[bool, str]:
+    """Змінити статус рядків заявки (головна + дочірні), за потреби — чекбокс «Виконання».
+
+    exact=True змінює лише рядок із точно таким ID (для окремої підзаявки).
+    """
+    try:
+        if not request_id:
+            return False, "Порожній ID заявки"
+
+        client = get_sheets_client()
+        if not client:
+            return False, "Не вдалося створити клієнт Google Sheets"
+
+        spreadsheet_id = os.getenv("GOOGLE_SPREADSHEET_ID")
+        worksheet_name = os.getenv("GOOGLE_WORKSHEET_NAME", "ЗАЯВКА")
+        if not spreadsheet_id:
+            return False, "GOOGLE_SPREADSHEET_ID не задано"
+
+        worksheet = client.open_by_key(spreadsheet_id).worksheet(worksheet_name)
+        headers = worksheet.row_values(1)
+        header_map = {h.strip(): idx for idx, h in enumerate(headers) if h and h.strip()}
+        id_idx = header_map.get("ID заявки")
+        status_idx = header_map.get("Статус")
+        if id_idx is None or status_idx is None:
+            return False, "У таблиці немає колонок 'ID заявки' / 'Статус'"
+
+        normalized_id = request_id.strip().upper()
+        parent_id = normalized_id.split("-", 1)[0]
+        id_column_values = worksheet.col_values(id_idx + 1)
+        matched_rows: List[int] = []
+        for row_number in range(2, len(id_column_values) + 1):
+            row_id = (id_column_values[row_number - 1] or "").strip().upper()
+            if exact:
+                if row_id == normalized_id:
+                    matched_rows.append(row_number)
+            elif row_id == parent_id or row_id.startswith(f"{parent_id}-"):
+                matched_rows.append(row_number)
+
+        if not matched_rows:
+            return False, f"Заявку з ID '{request_id}' не знайдено"
+
+        updates = []
+        status_col = _column_to_letter(status_idx + 1)
+        execution_idx = header_map.get("Виконання")
+        comment_idx = header_map.get("Коментар статусу")
+        timestamp = datetime.now(pytz.timezone('Europe/Kyiv')).strftime("%d.%m.%Y %H:%M")
+        for row_number in matched_rows:
+            updates.append({"range": f"{status_col}{row_number}", "values": [[status]]})
+            if execution is not None and execution_idx is not None:
+                col = _column_to_letter(execution_idx + 1)
+                updates.append({"range": f"{col}{row_number}", "values": [[bool(execution)]]})
+            if comment_idx is not None:
+                col = _column_to_letter(comment_idx + 1)
+                by_text = changed_by.strip() if changed_by else "Невідомий користувач"
+                updates.append({"range": f"{col}{row_number}", "values": [[f"{status} | {timestamp} | {by_text}"]]})
+
+        worksheet.batch_update(updates, value_input_option="USER_ENTERED")
+        return True, f"Заявка {request_id}: статус {status} ({len(matched_rows)} рядків)"
+    except Exception as e:
+        logger.error(f"Error setting request status in sheets: {e}")
+        return False, f"Помилка при зміні статусу: {e}"
 
 
 def restore_request(request_id: str, restored_by: str = "") -> Tuple[bool, str]:

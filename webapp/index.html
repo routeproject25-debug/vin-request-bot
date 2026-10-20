@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="uk">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Заявка на перевезення</title>
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <main id="app">
+    <header class="page-head">
+      <h1 id="page-title">Нова заявка</h1>
+      <p id="page-subtitle" class="muted">Заповніть поля — заявка піде в робочий чат</p>
+    </header>
+
+    <div id="loading" class="notice">Завантаження…</div>
+    <div id="error-box" class="notice error" hidden></div>
+
+    <form id="form" hidden novalidate>
+      <section class="card">
+        <h2>Хто замовляє</h2>
+        <div class="field">
+          <span class="label">Запит від <b class="req">*</b></span>
+          <div class="chips" data-chips="department"></div>
+        </div>
+        <label class="field">
+          <span class="label">Ініціатор заявки (ПІБ) <b class="req">*</b></span>
+          <input name="initiator" autocomplete="name" maxlength="120" placeholder="Прізвище Ім'я">
+        </label>
+        <div class="field">
+          <span class="label">Підприємство <b class="req">*</b></span>
+          <div class="chips" data-chips="company"></div>
+          <input name="company_custom" class="other" placeholder="Назва підприємства" hidden>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>Вантаж і авто</h2>
+        <div class="field">
+          <span class="label">Вид вантажу <b class="req">*</b></span>
+          <div class="chips" data-chips="cargo_type"></div>
+        </div>
+        <div class="field" id="crop-field" hidden>
+          <span class="label">Культура <b class="req">*</b></span>
+          <div class="chips" data-chips="crop"></div>
+          <input name="crop_custom" class="other" placeholder="Назва культури" hidden>
+        </div>
+        <label class="field" id="cargo-custom-field" hidden>
+          <span class="label">Тип вантажу <b class="req">*</b></span>
+          <input name="cargo_custom" placeholder="Що веземо">
+        </label>
+        <div class="field">
+          <span class="label">Габарит / негабарит <b class="req">*</b></span>
+          <div class="chips" data-chips="size_type"></div>
+        </div>
+        <div class="row">
+          <label class="field" id="bigbag-field" hidden>
+            <span class="label">Вага 1 біг-бегу, кг <b class="req">*</b></span>
+            <input name="big_bag_weight" inputmode="decimal" placeholder="1000">
+          </label>
+          <label class="field">
+            <span class="label" id="volume-label">Обсяг, т <b class="req">*</b></span>
+            <input name="volume" inputmode="decimal" placeholder="25">
+          </label>
+        </div>
+        <div class="field">
+          <span class="label">Тип авто <b class="req">*</b></span>
+          <div class="chips" data-chips="vehicle_type"></div>
+          <input name="vehicle_type_custom" class="other" placeholder="Тип авто" hidden>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>Дата перевезення</h2>
+        <div class="segmented" data-segmented="date_type">
+          <button type="button" data-value="single">📅 Разове</button>
+          <button type="button" data-value="period">📆 Період</button>
+        </div>
+        <div class="row">
+          <label class="field">
+            <span class="label" id="date-from-label">Дата <b class="req">*</b></span>
+            <input type="date" name="date_from">
+          </label>
+          <label class="field" id="date-to-field" hidden>
+            <span class="label">Кінцева дата <b class="req">*</b></span>
+            <input type="date" name="date_to">
+          </label>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>Завантаження</h2>
+        <div class="field">
+          <span class="label">Населений пункт <span class="muted">(можна кілька або пропустити)</span></span>
+          <div class="city-picker" data-city="load_cities"></div>
+        </div>
+        <label class="field">
+          <span class="label">Склад</span>
+          <input name="load_place" placeholder="Якщо відомо">
+        </label>
+        <label class="field" data-hide-liquid>
+          <span class="label">Спосіб завантаження</span>
+          <input name="load_method" placeholder="Якщо важливо">
+        </label>
+        <label class="field">
+          <span class="label">Контакт на завантаженні</span>
+          <input name="load_contact" list="contacts" placeholder="Іванов Іван 0501234567">
+        </label>
+      </section>
+
+      <section class="card">
+        <h2>Розвантаження</h2>
+        <div class="field">
+          <span class="label">Населений пункт <b class="req">*</b> <span class="muted">(можна кілька)</span></span>
+          <div class="city-picker" data-city="unload_cities"></div>
+        </div>
+        <div class="field" id="distribution-field" hidden>
+          <span class="label">Розподіл обсягу по пунктах <b class="req">*</b></span>
+          <div id="distribution"></div>
+          <p id="distribution-sum" class="hint"></p>
+        </div>
+        <label class="field" id="unload-place-field">
+          <span class="label">Склад</span>
+          <input name="unload_place" placeholder="Якщо відомо">
+        </label>
+        <label class="field" data-hide-liquid id="unload-method-field">
+          <span class="label">Спосіб розвантаження</span>
+          <input name="unload_method" placeholder="Якщо важливо">
+        </label>
+        <label class="field">
+          <span class="label">Контакт на розвантаженні</span>
+          <input name="unload_contact" list="contacts" placeholder="Іванов Іван 0501234567">
+        </label>
+      </section>
+
+      <section class="card">
+        <h2>Примітки</h2>
+        <label class="field">
+          <textarea name="notes" rows="3" maxlength="1000" placeholder="Необов'язково"></textarea>
+        </label>
+      </section>
+
+      <datalist id="contacts"></datalist>
+      <button type="submit" id="fallback-submit" class="primary" hidden>Надіслати заявку</button>
+    </form>
+
+    <div id="done" class="notice success" hidden></div>
+  </main>
+  <script src="/static/app.js"></script>
+</body>
+</html>
