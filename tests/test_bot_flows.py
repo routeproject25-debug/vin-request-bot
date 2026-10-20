@@ -342,17 +342,26 @@ def test_child_edit_of_active_request_works(harness):
 
 def test_reminder_done_and_reschedule(harness):
     h = harness
-    h.db.add("DUE00001", USER_ID, _request_data(services.kyiv_today().strftime("%d.%m.%Y")))
+    today_text = services.kyiv_today().strftime("%d.%m.%Y")
+    # Нагадуємо: кінцева дата рівно через 2 дні, заявка створена раніше
+    h.db.add("DUE00001", USER_ID, _request_data(_date(2).strftime("%d.%m.%Y")))
     h.db.add("DUE00002", USER_ID, _request_data(
-        f"{_date(-3).strftime('%d.%m.%Y')} - {_date(-1).strftime('%d.%m.%Y')}"))
+        f"{_date(-3).strftime('%d.%m.%Y')} - {_date(2).strftime('%d.%m.%Y')}"))
+    # Не нагадуємо: інший термін або заявку створено сьогодні
     h.db.add("FUTURE01", USER_ID, _request_data(_date(5).strftime("%d.%m.%Y")))
+    h.db.add("ENDTODAY", USER_ID, _request_data(today_text))
+    h.db.add("OVERDUE1", USER_ID, _request_data(_date(-1).strftime("%d.%m.%Y")))
+    h.db.add("FRESH001", USER_ID, _request_data(_date(2).strftime("%d.%m.%Y"), created_date=today_text))
+    h.db.add("FRESH002", USER_ID, _request_data(_date(1).strftime("%d.%m.%Y"), created_date=today_text))
 
     import reminders
 
     assert h.await_(reminders.send_due_reminders(h.app.bot)) == 2
     reminder_texts = h.rec.texts(GROUP_ID)
-    assert any("Сьогодні останній день" in t and "DUE00001" in t for t in reminder_texts)
-    assert any("Термін минув 1 дн. тому" in t and "DUE00002" in t for t in reminder_texts)
+    assert len(reminder_texts) == 2
+    expected_when = f"Через 2 дн. ({_date(2).strftime('%d.%m')}) закінчується термін перевезення"
+    assert any(expected_when in t and "DUE00001" in t for t in reminder_texts)
+    assert any("DUE00002" in t for t in reminder_texts)
     assert h.db.rows["DUE00001"]["reminder_message_id"]
 
     new_end = _date(4)
@@ -382,9 +391,19 @@ def test_reminder_done_and_reschedule(harness):
     assert any("виконану" in t for t in h.rec.texts(USER_ID))
 
 
+def test_reminder_days_before_is_configurable(harness, monkeypatch):
+    h = harness
+    monkeypatch.setenv("REMINDER_DAYS_BEFORE", "3")
+    h.db.add("DUE3DAYS", USER_ID, _request_data(_date(3).strftime("%d.%m.%Y")))
+    h.db.add("DUE2DAYS", USER_ID, _request_data(_date(2).strftime("%d.%m.%Y")))
+    import reminders
+    assert h.await_(reminders.send_due_reminders(h.app.bot)) == 1
+    assert "DUE3DAYS" in h.rec.texts(GROUP_ID)[0]
+
+
 def test_reminder_rejects_past_date_and_non_logist(harness, monkeypatch):
     h = harness
-    h.db.add("DUE00003", USER_ID, _request_data(services.kyiv_today().strftime("%d.%m.%Y")))
+    h.db.add("DUE00003", USER_ID, _request_data(_date(2).strftime("%d.%m.%Y")))
     monkeypatch.setenv("LOGIST_USER_IDS", str(LOGIST_ID))
     h.run(
         h.callback("RM:DONE:DUE00003", uid=999, chat=h.group_chat),

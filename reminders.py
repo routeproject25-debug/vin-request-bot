@@ -1,4 +1,4 @@
-"""Щоденні нагадування логістам у робочій групі про заявки, термін яких спливає.
+"""Щоденні нагадування логістам у робочій групі: за REMINDER_DAYS_BEFORE (2) дні до кінця терміну заявки.
 
 Під нагадуванням — кнопки «Виконано», «Перенести» (з календарем) і «Скасовано».
 Після дії нагадування видаляється; при наступному запуску старі нагадування
@@ -7,9 +7,10 @@
 import asyncio
 import logging
 import os
-from datetime import date, time as dtime, timedelta
-from typing import Any, Dict
+from datetime import date, datetime, time as dtime, timedelta
+from typing import Any, Dict, Optional
 
+import pytz
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes
 
@@ -74,7 +75,7 @@ def build_reminder_text(row: Dict[str, Any], today: date) -> str:
     elif days_left == 0:
         when = "⏰ Сьогодні останній день перевезення"
     else:
-        when = f"⏳ До кінця терміну: {days_left} дн."
+        when = f"⏳ Через {days_left} дн. ({end.strftime('%d.%m')}) закінчується термін перевезення"
 
     volume_value = services.to_float(data.get("volume"))
     volume = (
@@ -104,24 +105,44 @@ async def clear_old_reminders(bot: Any) -> int:
     return removed
 
 
+def request_created_day(row: Dict[str, Any]) -> Optional[date]:
+    """День створення заявки за Києвом (з request_data або created_at з БД)."""
+    data = row.get("request_data") if isinstance(row.get("request_data"), dict) else {}
+    created = services.parse_ua_date(data.get("created_date"))
+    if created:
+        return created
+    created_at = row.get("created_at")
+    if isinstance(created_at, datetime):
+        if created_at.tzinfo is None:
+            created_at = pytz.UTC.localize(created_at)  # PostgreSQL повертає naive UTC
+        return created_at.astimezone(services.KYIV_TZ).date()
+    return None
+
+
+def needs_reminder(row: Dict[str, Any], today: date) -> bool:
+    """Нагадуємо лише заявки, створені раніше дня нагадування.
+
+    Якщо заявку зробили в день нагадування або пізніше (наприклад, сьогодні на завтра),
+    нагадування не потрібне.
+    """
+    created = request_created_day(row)
+    return created is None or created < today
+
+
 async def send_due_reminders(bot: Any) -> int:
-    """Надіслати нагадування по всіх активних заявках, термін яких спливає. Повертає кількість."""
+    """Нагадати про активні заявки, у яких кінцева дата — рівно через REMINDER_DAYS_BEFORE днів."""
     chat_id = os.getenv("TARGET_CHAT_ID")
     if not chat_id:
         return 0
 
     today = services.kyiv_today()
-    days_ahead = _int_env("REMINDER_DAYS_AHEAD", 0)
-    lookback = _int_env("REMINDER_LOOKBACK_DAYS", 7)
+    days_before = max(_int_env("REMINDER_DAYS_BEFORE", 2), 0)
     max_count = _int_env("REMINDER_MAX_PER_RUN", 30)
+    target_end = today + timedelta(days=days_before)
 
     await clear_old_reminders(bot)
-    rows = await asyncio.to_thread(
-        db.get_requests_due_for_reminder,
-        today + timedelta(days=days_ahead),
-        today - timedelta(days=lookback),
-        max_count,
-    )
+    rows = await asyncio.to_thread(db.get_requests_due_for_reminder, target_end, target_end, max_count)
+    rows = [row for row in rows if needs_reminder(row, today)]
 
     sent = 0
     for row in rows:
