@@ -884,7 +884,7 @@ WEBAPP_MENU_ITEM = "🧾 Заявка у формі"
 
 def _webapp_url(**params: str) -> Optional[str]:
     """URL міні-додатка (якщо налаштовано WEBAPP_URL) з параметрами ?edit= / ?copy=."""
-    base = (os.getenv("WEBAPP_URL") or "").strip()
+    base = webapp_server.webapp_url()
     if not base:
         return None
     if params:
@@ -1226,11 +1226,21 @@ async def handle_start_menu_choice(update: Update, context: ContextTypes.DEFAULT
         if not form_button:
             await update.message.reply_text("Форма поки не налаштована (немає WEBAPP_URL).")
             return START
-        await update.message.reply_text(
-            "Заповніть заявку у формі — усі поля на одному екрані.\n"
-            "Після надсилання заявка з'явиться в робочому чаті так само, як із чату з ботом.",
-            reply_markup=InlineKeyboardMarkup([[form_button]]),
-        )
+        try:
+            await update.message.reply_text(
+                "Заповніть заявку у формі — усі поля на одному екрані.\n"
+                "Після надсилання заявка з'явиться в робочому чаті так само, як із чату з ботом.",
+                reply_markup=InlineKeyboardMarkup([[form_button]]),
+            )
+        except Exception as e:
+            logging.error(f"Failed to send web app button (WEBAPP_URL={_webapp_url()}): {e}")
+            await update.message.reply_text(
+                "❌ Telegram не прийняв адресу форми.\n"
+                f"WEBAPP_URL: {_webapp_url()}\n"
+                f"Помилка: {e}\n\n"
+                "Перевірте змінну WEBAPP_URL на Railway (має бути https://…up.railway.app/). "
+                "Поки що заявку можна створити через «📝 Нова заявка»."
+            )
         return START
 
     elif text == "🆔 Мій ID":

@@ -213,8 +213,22 @@ def create_app(bot: Any) -> web.Application:
     return app
 
 
+def normalize_webapp_url(raw: Optional[str]) -> Optional[str]:
+    """Telegram приймає лише https-адреси: додаємо схему, прибираємо лапки/пробіли."""
+    url = (raw or "").strip().strip("'\"").strip()
+    if not url:
+        return None
+    if url.startswith("http://"):
+        url = "https://" + url[len("http://"):]
+    elif not url.startswith("https://"):
+        url = "https://" + url.lstrip("/")
+    if "?" not in url and not url.endswith("/"):
+        url += "/"
+    return url
+
+
 def webapp_url() -> Optional[str]:
-    return (os.getenv("WEBAPP_URL") or "").strip() or None
+    return normalize_webapp_url(os.getenv("WEBAPP_URL"))
 
 
 async def start(application: Any) -> None:

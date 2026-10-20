@@ -94,6 +94,17 @@ def _valid_form(**overrides):
     return form
 
 
+@pytest.mark.parametrize("raw, expected", [
+    ("bot-production.up.railway.app", "https://bot-production.up.railway.app/"),
+    ("  \"https://bot.up.railway.app\" ", "https://bot.up.railway.app/"),
+    ("http://bot.up.railway.app/", "https://bot.up.railway.app/"),
+    ("https://bot.up.railway.app/?x=1", "https://bot.up.railway.app/?x=1"),
+    ("", None),
+])
+def test_normalize_webapp_url(raw, expected):
+    assert webapp_server.normalize_webapp_url(raw) == expected
+
+
 def test_api_requires_telegram_signature(env):
     async def scenario(client, bot):
         assert (await client.get("/api/config")).status == 401
